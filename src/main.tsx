@@ -1,263 +1,142 @@
-import '@logseq/libs'
+import "@logseq/libs";
 
-import { format } from 'date-fns'
+import { format } from "date-fns";
 
-import './index.css'
-import { getDatePattern } from './libs/date'
-import { settingSchema } from './libs/settings'
-import { logseq as pluginInfo } from '../package.json'
-import { BlockEntity, BlockIdentity } from '@logseq/libs/dist/LSPlugin'
-import { englishSettingSchema } from './libs/settings_en'
+import "./index.css";
+import { getDatePattern } from "./libs/date";
+import { settingSchema } from "./libs/settings";
+import { logseq as pluginInfo } from "../package.json";
+import { BlockEntity, BlockIdentity } from "@logseq/libs/dist/LSPlugin";
+import { englishSettingSchema } from "./libs/settings_en";
 
-const pluginId = pluginInfo.id
+const pluginId = pluginInfo.id;
 
 interface Settings {
-  doneContent: string
-  displayMode: 'content' | 'property' | 'childBlock'
-  displayPosition: 'left' | 'right'
-  collapseMode: boolean
-  disabled: boolean
-  isJournalPageAdd: boolean
+  doneContent: string;
+  displayMode: "content" | "property" | "childBlock";
+  displayPosition: "left" | "right";
+  collapseMode: boolean;
+  disabled: boolean;
+  isJournalPageAdd: boolean;
 }
 
 // main function
 async function main() {
-  console.info(`#${pluginId}: MAIN`)
+  console.info(`#${pluginId}: MAIN`);
 
   // 初始化设置（当安装插件之后第一次注入）
   if (logseq.settings === undefined) {
     logseq.updateSettings({
-      doneContent: '- [[{date}]]',
-      displayPosition: 'right',
-      displayMode: 'content',
+      doneContent: "- [[{date}]]",
+      displayPosition: "right",
+      displayMode: "content",
       collapseMode: true,
       isJournalPageAdd: false,
-    })
+    });
   }
 
-  const { preferredLanguage } = await logseq.App.getUserConfigs()
-  if (preferredLanguage === 'zh-CN') {
-    logseq.useSettingsSchema(settingSchema)
+  const { preferredLanguage } = await logseq.App.getUserConfigs();
+  if (preferredLanguage === "zh-CN") {
+    logseq.useSettingsSchema(settingSchema);
   } else {
-    logseq.useSettingsSchema(englishSettingSchema)
+    logseq.useSettingsSchema(englishSettingSchema);
   }
+
+  // 监听新页面创建
+  logseq.App.onPageHeadActionsSlotted(async ({ page }) => {
+    if (!page) return;
+    await updatePageCreatedAt(page.uuid);
+  });
 
   // 监控数据变化
   logseq.DB.onChanged(async (data) => {
     // 只监测数据修改，且不是撤销和重做操作
-    if (data.txMeta?.outlinerOp !== 'save-block') return
-    if (data.txMeta?.undo || data.txMeta?.redo) return
+    if (data.txMeta?.outlinerOp !== "save-block") return;
+    if (data.txMeta?.undo || data.txMeta?.redo) return;
 
-    const {
-      doneContent,
-      displayMode,
-      displayPosition,
-      collapseMode,
-      isJournalPageAdd,
-    } = logseq.settings as unknown as Settings
+    // 更新页面的 updatedAt 属性
+    await updatePageUpdatedAt();
+  });
 
-    // 用户如果更改了日期格式，需要重新获取（放在main函数顶层获取不到最新,所以放这里）
-    const { preferredDateFormat } = await logseq.App.getUserConfigs()
+  // 辅助函数：更新页面的 updatedAt 属性
+  async function updatePageUpdatedAt() {
+    const { preferredDateFormat } = await logseq.App.getUserConfigs();
+    const currentDate = format(new Date(), preferredDateFormat);
+    const currentBlocksTree = await logseq.Editor.getCurrentPageBlocksTree();
+    console.log("currentBlocksTree", currentBlocksTree);
 
-    const block = await logseq.Editor.getBlock(data.blocks[0].uuid)
-    const isDoneStatus = block?.marker === 'DONE'
-    const pageId = block?.page.id as number
-    const currentPage = await logseq.Editor.getPage(pageId, {
-      includeChildren: false,
-    })
+    if (!currentBlocksTree) return;
 
-    if (
-      currentPage?.name.replace(
-        /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi,
-        (match) => match.charAt(0).toUpperCase() + match.slice(1).toLowerCase()
-      ) === format(new Date(), preferredDateFormat) &&
-      !isJournalPageAdd
-    ) {
-      return
-    }
+    if (currentBlocksTree.length > 0) {
+      const firstBlock = await logseq.Editor.getBlock(
+        currentBlocksTree[0].uuid
+      );
+      console.log("有第一个块");
 
-    if (!block || !block.content || !block.marker) return
+      if (!firstBlock) return;
 
-    switch (displayMode) {
-      case 'content':
-        await updateContent(
-          block,
-          isDoneStatus,
-          doneContent,
-          displayPosition,
-          preferredDateFormat
-        )
-        break
-      case 'property':
-        await updateProperty(
-          block,
-          isDoneStatus,
-          doneContent,
-          preferredDateFormat
-        )
-        break
-      case 'childBlock':
-        await updateChildBlock(
-          block,
-          isDoneStatus,
-          doneContent,
-          collapseMode,
-          preferredDateFormat
-        )
-        break
-    }
-  })
-  async function updateContent(
-    block: BlockEntity,
-    isDoneStatus: boolean,
-    doneContent: string,
-    displayPosition: string,
-    preferredDateFormat: string
-  ) {
-    const datePattern = getDatePattern(preferredDateFormat)
-    const timePattern = '\\d{2}:\\d{2}(:\\d{2})?'
-    // 转义 doneContent 中的特殊字符
-    const escapeRegExp = (string: string) => {
-      return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    }
-    // 替换 doneContent 中的占位符，并保留转义后的特殊字符
-    const combinedPattern = escapeRegExp(doneContent)
-      .replace(/\\\{date\\\}/g, datePattern)
-      .replace(/\\\{time\\\}/g, timePattern)
-    const regex = new RegExp(combinedPattern)
+      if (firstBlock && firstBlock.content?.includes("updatedat:: ")) {
+        // NOTE: update-at因为横线的原因不会显示
+        console.log("第一个块包含update-at");
+        const oldContent = firstBlock.content;
+        const newContent = oldContent.replace(
+          /updatedat:: (.+)\n/,
+          `updatedat:: ${currentDate}\n`
+        );
+        await logseq.Editor.updateBlock(currentBlocksTree[0].uuid, newContent);
+      } else {
+        // 检查是否为属性块（每行都是 xxx:: xxx 的形式）
+        const oldContent = firstBlock?.content;
+        const isPropertyBlock = oldContent
+          ?.split("\n")
+          .every((line) => line.trim() === "" || /^[^:]+::/.test(line.trim()));
 
-    // 1. 已经加入过内容，而且状态为DONE，则不操作
-    if (regex.test(block.content) && isDoneStatus) return
+        // 如果是属性块，直接在末尾添加新的属性
+        if (isPropertyBlock) {
+          console.log("是属性块");
+          const newContent = `${oldContent}\nupdatedat:: ${currentDate}`;
+          await logseq.Editor.updateBlock(
+            currentBlocksTree[0].uuid,
+            newContent
+          );
 
-    // 2. 已经加入过内容，但是状态变为其他状态，删除添加的内容
-    if (regex.test(block.content)) {
-      const newContent = block.content.replace(regex, '').trim()
-      await logseq.Editor.updateBlock(block.uuid, newContent)
-      return
-    }
-
-    // 3. 没有加入过内容，而且状态不为DONE则不操作
-    if (!isDoneStatus) return
-
-    // 4. 没有加入过内容，而且状态为DONE则加入内容
-    // 首先检测doneContent是否包含{date}，{time}等变量并分别替换为真实值
-    // 并且注意处理block.content开头的DONE字符串（这个字符串必须在开头，即便我们将displayPosition设置为left）
-    const contentWithoutDone = block.content.replace(/^DONE\s*/, '')
-    const tempContentForReplace = doneContent
-      .replace(/\{date\}/g, format(new Date(), preferredDateFormat))
-      .replace(/\{time\}/g, format(new Date(), 'HH:mm'))
-    const finalContentForReplace =
-      displayPosition === 'right'
-        ? `DONE ${contentWithoutDone} ${tempContentForReplace}`
-        : `DONE ${tempContentForReplace} ${contentWithoutDone}`
-
-    await logseq.Editor.updateBlock(block.uuid, finalContentForReplace)
-  }
-  async function updateProperty(
-    block: BlockEntity,
-    isDoneStatus: boolean,
-    doneContent: string,
-    preferredDateFormat: string
-  ) {
-    // 从doneContent中提取出属性值
-    const propertyRegex = /^([a-z]+)::\s+(.+)/
-    const match = doneContent.match(propertyRegex)
-    if (!match) {
-      await logseq.UI.showMsg('请在设置中设置正确的属性格式.', 'error')
-      return
-    }
-    const propertyName = match[1]
-    const propertyValue = match[2]
-    const hasProperty = Object.prototype.hasOwnProperty.call(
-      block.properties,
-      propertyName
-    )
-
-    // 1. 已经添加过相应属性，而且状态为DONE，则不操作
-    if (hasProperty && isDoneStatus) return
-
-    // 2. 已经添加过相应属性，但是状态变为其他状态，删除添加的属性
-    if (hasProperty) {
-      await logseq.Editor.removeBlockProperty(block.uuid, propertyName)
-      return
-    }
-
-    // 3. 没有添加过相应属性，而且状态不为DONE则不操作
-    if (!isDoneStatus) return
-
-    // 4. 没有添加过相应属性，而且状态为DONE则添加属性
-    const finalPropertyValue = propertyValue
-      .replace(/\{date\}/g, format(new Date(), preferredDateFormat))
-      .replace(/\{time\}/g, format(new Date(), 'HH:mm'))
-
-    await logseq.Editor.upsertBlockProperty(
-      block.uuid,
-      propertyName,
-      finalPropertyValue
-    )
-  }
-  async function updateChildBlock(
-    block: BlockEntity,
-    isDoneStatus: boolean,
-    doneContent: string,
-    collapseMode: boolean,
-    preferredDateFormat: string
-  ) {
-    const datePattern = getDatePattern(preferredDateFormat)
-    const timePattern = '\\d{2}:\\d{2}(:\\d{2})?'
-    // 转义 doneContent 中的特殊字符
-    const escapeRegExp = (string: string) => {
-      return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    }
-    // 替换 doneContent 中的占位符，并保留转义后的特殊字符
-    // 特殊情况：插入的子块的开头的空白字符会被忽略，所以需要把这里的空白字符也忽略
-    const combinedPattern = escapeRegExp(doneContent)
-      .replace(/\\\{date\\\}/g, datePattern)
-      .replace(/\\\{time\\\}/g, timePattern)
-      .trim()
-    const regex = new RegExp(combinedPattern)
-    // 特殊情况：这里要提前判断是否有子块，否则firstChild拿不到会报错
-    if (block.children?.length === 0 && isDoneStatus) {
-      const contentForChild = doneContent
-        .replace(/\{date\}/g, format(new Date(), preferredDateFormat))
-        .replace(/\{time\}/g, format(new Date(), 'HH:mm'))
-
-      await logseq.Editor.insertBlock(block.uuid, contentForChild)
-      if (collapseMode) {
-        await logseq.Editor.setBlockCollapsed(block.uuid, true)
+          // 如果不是属性块，仍然是创建第一个块
+        } else {
+          console.log("不是属性块");
+          await logseq.Editor.insertBlock(
+            firstBlock.uuid,
+            `updatedat:: ${currentDate}`,
+            {
+              before: true,
+              sibling: true,
+            }
+          );
+        }
       }
-      return
     }
-    if (block.children?.length === 0 && !isDoneStatus) return
+  }
 
-    const firstChildUUid = block.children?.[0]?.[1] as BlockIdentity
-    const firstChild = await logseq.Editor.getBlock(firstChildUUid)
-    const hasDoneContent = regex.test(firstChild!.content)
+  // 辅助函数：设置页面的 createdAt 属性（仅当不存在时）
+  async function updatePageCreatedAt(pageId: string) {
+    const page = await logseq.Editor.getPage(pageId);
+    if (!page) return;
 
-    // 1. 没有加入过相应子块，而且状态不为DONE，则不操作
-    if (!isDoneStatus && !hasDoneContent) return
-
-    // 2. 已经加入过相应子块，而且状态为DONE，则不操作
-    if (hasDoneContent && isDoneStatus) return
-
-    // 3. 已经加入过相应子块，但是状态变为其他状态，删除添加的子块
-    if (hasDoneContent) {
-      await logseq.Editor.removeBlock(firstChildUUid)
-      return
-    }
-    // 4. 没有加入过相应子块，而且状态为DONE则加入子块
-    // 首先检测doneContent是否包含{date}，{time}等变量并分别替换为真实值
-    if (!hasDoneContent && isDoneStatus) {
-      const contentForChild = doneContent
-        .replace(/\{date\}/g, format(new Date(), preferredDateFormat))
-        .replace(/\{time\}/g, format(new Date(), 'HH:mm'))
-
-      await logseq.Editor.insertBlock(block.uuid, contentForChild)
-      if (collapseMode) {
-        await logseq.Editor.setBlockCollapsed(block.uuid, true)
+    // 获取页面的第一个块
+    const blocks = await logseq.Editor.getPageBlocksTree(pageId);
+    if (blocks && blocks.length > 0) {
+      // 检查是否已存在 created-at 属性
+      const block = await logseq.Editor.getBlock(blocks[0].uuid);
+      if (block && !block.properties?.["created-at"]) {
+        const { preferredDateFormat } = await logseq.App.getUserConfigs();
+        const currentDate = format(new Date(), preferredDateFormat);
+        await logseq.Editor.upsertBlockProperty(
+          blocks[0].uuid,
+          "created-at",
+          currentDate
+        );
       }
     }
   }
 }
 
-logseq.ready(main).catch(console.error)
+logseq.ready(main).catch(console.error);
