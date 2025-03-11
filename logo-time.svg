@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="200" height="200">
+  <!-- 外圆框 -->
+  <circle cx="512" cy="512" r="400" fill="none" stroke="currentColor" stroke-width="48"/>
+
+  <!-- 时钟指针 -->
+  <path d="M512 512 L512 300" stroke="currentColor" stroke-width="48" stroke-linecap="round"/>
+  <path d="M512 512 L650 512" stroke="currentColor" stroke-width="48" stroke-linecap="round"/>
+
+  <!-- 更新箭头 -->
+  <path d="M512 200 A312 312 0 1 1 300 512" fill="none" stroke="currentColor" stroke-width="48" stroke-linecap="round"/>
+  <path d="M300 412 L300 512 L400 512" fill="none" stroke="currentColor" stroke-width="48" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
