@@ -90,10 +90,28 @@ async function main() {
 
       if (!firstBlock) return;
 
+      // 如果已经有 created 属性，并且 updated 属性也是当天的话就直接退出
+      if (
+        firstBlock.content?.includes(`${createTimePropertyName}:: `) &&
+        firstBlock.content?.includes(`${updateTimePropertyName}:: `)
+      ) {
+        const created = firstBlock.content?.match(
+          new RegExp(`${createTimePropertyName}:: (.+)\n`)
+        );
+        const updated = firstBlock.content?.match(
+          new RegExp(`${updateTimePropertyName}:: ${updatedAt}\n`)
+        );
+
+        if (created && updated) {
+          return;
+        }
+      }
+
       // 处理已有updated属性或者created属性的情况
       if (
-        (firstBlock && firstBlock.content?.includes("updated:: ")) ||
-        firstBlock.content?.includes("created:: ")
+        (firstBlock &&
+          firstBlock.content?.includes(`${updateTimePropertyName}:: `)) ||
+        firstBlock.content?.includes(`${createTimePropertyName}:: `)
       ) {
         const oldContent = firstBlock.content;
         let newContent = oldContent;
