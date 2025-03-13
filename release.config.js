@@ -1,33 +1,33 @@
 module.exports = {
-  branches: ['master'],
+  branches: ["main"],
   plugins: [
     [
-      '@semantic-release/commit-analyzer',
+      "@semantic-release/commit-analyzer",
       {
-        preset: 'conventionalcommits',
+        preset: "conventionalcommits",
       },
     ],
-    '@semantic-release/release-notes-generator',
-    '@semantic-release/changelog',
+    "@semantic-release/release-notes-generator",
+    "@semantic-release/changelog",
     [
-      '@semantic-release/npm',
+      "@semantic-release/npm",
       {
         npmPublish: false,
       },
     ],
-    '@semantic-release/git',
+    "@semantic-release/git",
     [
-      '@semantic-release/exec',
+      "@semantic-release/exec",
       {
         prepareCmd:
-          'zip -qq -r logseq-task-done-time-mini-${nextRelease.version}.zip dist readme.md logo.svg LICENSE package.json',
+          "zip -qq -r logseq-task-done-time-mini-${nextRelease.version}.zip dist readme.md logo.svg LICENSE package.json",
       },
     ],
     [
-      '@semantic-release/github',
+      "@semantic-release/github",
       {
-        assets: 'logseq-task-done-time-mini-*.zip',
+        assets: "logseq-task-done-time-mini-*.zip",
       },
     ],
   ],
-}
+};
