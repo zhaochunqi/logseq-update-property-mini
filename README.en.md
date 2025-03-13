@@ -20,7 +20,7 @@ I want to know when my page was updated and created. And in the Journey diary pa
 
 ## Demo
 
-![demo](screenshots/demo.png)
+![demo](screenshots/demo.gif)
 
 ## About the configuration
 

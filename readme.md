@@ -20,7 +20,7 @@
 
 ## 功能演示
 
-![demo](screenshots/demo.png)
+![demo](screenshots/demo.gif)
 
 ## 关于配置项
 
