@@ -7,6 +7,7 @@ import { settingSchema } from "./libs/settings";
 import { logseq as pluginInfo } from "../package.json";
 import { englishSettingSchema } from "./libs/settings_en";
 import { PageIdentity } from "@logseq/libs/dist/LSPlugin.user";
+import { LRUCache } from "lru-cache";
 
 const pluginId = pluginInfo.id;
 
@@ -14,6 +15,53 @@ interface Settings {
   createTimePropertyName: string;
   updateTimePropertyName: string;
 }
+
+// 将 getGitFileCreationTime 函数提到全局作用域
+async function getGitFileCreationTime(fileId: number) {
+  // 使用 :find ?file . 语法直接返回单一值
+  const filePathResult = await logseq.DB.datascriptQuery(
+    `[:find ?file . :where [?b :file/path ?file] [(== ?b ${fileId})]]`
+  );
+  if (!filePathResult) throw new Error("file not found");
+
+  const filePath = filePathResult;
+
+  // 通过 git 命令来获取文件的创建时间
+  const logseqGraphFolder = (await logseq.App.getCurrentGraph())?.path;
+  if (!logseqGraphFolder) throw new Error("logseq graph folder not found");
+
+  const gitCommand = [
+    "-C",
+    logseqGraphFolder,
+    "log",
+    "--diff-filter=A",
+    "--format=%at",
+    "--reverse",
+    "--",
+    filePath
+  ];
+  
+  const result = await (logseq.Git?.execCommand?.(gitCommand) ??
+    Promise.reject(new Error("Git helper unavailable")));
+  if (!result.stdout) throw new Error("cannot get git creation time");
+
+  // verify the creation time is a number
+  const creationTimeStr = result.stdout.trim();
+  if (!/^\d+$/.test(creationTimeStr))
+    throw new Error("invalid git creation timestamp");
+
+  return Number(creationTimeStr) * 1000;
+}
+
+// 创建一个缓存对象来存储文件创建时间，避免重复查询
+// LRUCache<fileId, creationTime>
+const gitCreationTimeCache = new LRUCache<number, number>({
+  max: 1000,
+  ttl: 1000 * 60 * 60 * 24,
+  fetchMethod: async (fileId) => {
+    return await getGitFileCreationTime(fileId);
+  }
+});
 
 // main function
 async function main() {
@@ -50,8 +98,8 @@ async function main() {
       includeChildren: false,
     });
 
-    let createdAt = currentPage?.createdAt as number | undefined;
-    const updatedAt = currentPage?.updatedAt as number | undefined;
+    let createdAt = currentPage?.createdAt as number;
+    const updatedAt = currentPage?.updatedAt as number;
 
     if (!currentPage || !updatedAt) return;
 
@@ -62,17 +110,14 @@ async function main() {
       createdAt = Date.now();
     } else {
       //通过 fileId 来获取文件信息,进而通过 git 命令来获取文件的创建时间
-      try {
-        createdAt = await getGitFileCreationTime(fileId);
-      } catch (err) {
-        console.error("[update-property-mini] cannot resolve git creation time", err);
-        createdAt ??= Date.now();    // fall back to 'now' if still falsy
-      }
+      const fetchResult = await gitCreationTimeCache.fetch(fileId).catch(() => Date.now());
+      createdAt = fetchResult as number;
     }
 
     // 将时间戳转换为用户首选的日期格式
     const { preferredDateFormat } = await logseq.App.getUserConfigs();
     const formattedUpdatedAt = format(new Date(updatedAt), preferredDateFormat);
+    // 确保 createdAt 有值，如果没有则使用当前时间
     const formattedCreatedAt = format(new Date(createdAt), preferredDateFormat);
 
     // 1. 如果是日记页面，则什么也不添加
@@ -150,11 +195,6 @@ async function main() {
         // 如果没有 created 属性，添加它;如果有的话不动，因为创建时间不会变
         if (!oldContent.includes(`${createTimePropertyName}:: `)) {
           newContent = `${newContent}\n${createTimePropertyName}:: [[${createdAt}]]\n`;
-        } else {
-          newContent = newContent.replace(
-            new RegExp(`${createTimePropertyName}:: (.+)\n`),
-            `${createTimePropertyName}:: [[${createdAt}]]\n`
-          );
         }
 
         await logseq.Editor.updateBlock(currentBlocksTree[0].uuid, newContent);
@@ -186,36 +226,6 @@ async function main() {
         }
       }
     }
-  }
-
-  async function getGitFileCreationTime(fileId: number) {
-    // 使用 :find ?file . 语法直接返回单一值
-    const filePathResult = await logseq.DB.datascriptQuery(
-      `[:find ?file . :where [?b :file/path ?file] [(== ?b ${fileId})]]`
-    );
-    if (!filePathResult) throw new Error("file not found");
-
-    const filePath = filePathResult;
-
-    // 通过 git 命令来获取文件的创建时间
-    const logseqGraphFolder = (await logseq.App.getCurrentGraph())?.path;
-    if (!logseqGraphFolder) throw new Error("logseq graph folder not found");
-
-    const gitCommand = [
-      "-C",
-      logseqGraphFolder,
-      "log",
-      "--diff-filter=A",
-      "--follow",
-      "--reverse",
-      "--pretty=format:%at",
-      filePath,
-    ];
-    const result = await logseq.Git.execCommand(gitCommand);
-    if (!result.stdout) throw new Error("cannot get git creation time");
-
-    const creationTime = result.stdout;
-    return Number(creationTime) * 1000;
   }
 }
 
