@@ -127,7 +127,6 @@ async function main() {
       return;
     }
 
-    console.log("currentPage", JSON.stringify(currentPage));
     const ignorePagesList = ignorePages?.split(",")
       .map((page) => page.trim().toLowerCase())
       .filter((page) => page.length > 0) || [];
