@@ -15,4 +15,18 @@ export const englishSettingSchema: Array<SettingSchemaDesc> = [
     title: "Page update time property name",
     description: "Page update time property name, default is `updated`",
   },
+  {
+    key: "useGitCreationTime",
+    type: "boolean",
+    default: true,
+    title: "Use Git creation time",
+    description: "Use Git creation time",
+  },
+  {
+    key: "ignorePages",
+    type: "string",
+    default: "",
+    title: "Ignore pages",
+    description: "Ignore pages, separated by commas",
+  },
 ];

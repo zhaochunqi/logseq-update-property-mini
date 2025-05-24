@@ -14,6 +14,8 @@ const pluginId = pluginInfo.id;
 interface Settings {
   createTimePropertyName: string;
   updateTimePropertyName: string;
+  useGitCreationTime: boolean;
+  ignorePages: string;
 }
 
 // 将 getGitFileCreationTime 函数提到全局作用域
@@ -88,7 +90,7 @@ async function main() {
     if (data.txMeta?.outlinerOp !== "save-block") return;
     if (data.txMeta?.undo || data.txMeta?.redo) return;
 
-    const { createTimePropertyName, updateTimePropertyName } =
+    const { createTimePropertyName, updateTimePropertyName , useGitCreationTime, ignorePages} =
       logseq.settings as unknown as Settings;
 
     const block = await logseq.Editor.getBlock(data.blocks[0].uuid);
@@ -108,7 +110,7 @@ async function main() {
     //这里检测 file 是否存在,但是由于我们知道 file 不存在的时候,创建时间一定是今天,所以上面 createdAt 一定是今天,
     if (!fileId) {
       createdAt = Date.now();
-    } else {
+    } else if (useGitCreationTime) {
       //通过 fileId 来获取文件信息,进而通过 git 命令来获取文件的创建时间
       const fetchResult = await gitCreationTimeCache.fetch(fileId).catch(() => Date.now());
       createdAt = fetchResult as number;
@@ -122,6 +124,15 @@ async function main() {
 
     // 1. 如果是日记页面，则什么也不添加
     if (currentPage?.["journal?"]) {
+      return;
+    }
+
+    console.log("currentPage", JSON.stringify(currentPage));
+    const ignorePagesList = ignorePages?.split(",")
+      .map((page) => page.trim().toLowerCase())
+      .filter((page) => page.length > 0) || [];
+    if (ignorePagesList?.includes(currentPage.name.toLowerCase())) {
+      console.log(`page: ${currentPage.name} defined in ignorePages is ignored`);
       return;
     }
 
