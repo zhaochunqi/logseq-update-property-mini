@@ -181,14 +181,13 @@ async function handleBlockChange(data: {
     // 检查页面是否应该被忽略
     if (shouldIgnorePage(currentPage, ignorePages)) return;
 
-    const createdAt = currentPage?.createdAt as number;
     const updatedAt = currentPage.updatedAt as number;
     const fileId = currentPage.file?.id;
 
     // 并行获取所有需要的数据
     const [userConfigs, resolvedCreatedAt] = await Promise.all([
       userConfigsPromise,
-      getPageCreationTime(fileId, useGitCreationTime, createdAt),
+      getPageCreationTime(fileId, useGitCreationTime, new Date().getTime()),
     ]);
 
     // 将时间戳转换为用户首选的日期格式
@@ -216,9 +215,8 @@ async function handleBlockChange(data: {
  * 注册数据块变化监听器
  */
 function registerBlockChangeListener() {
-  logseq.DB.onChanged((data) => {
-    // 不使用 await，让处理在后台进行
-    handleBlockChange(data).catch((error) => {
+  logseq.DB.onChanged(async (data) => {
+    await handleBlockChange(data).catch((error) => {
       console.error("Error handling block change:", error);
     });
   });
