@@ -156,6 +156,8 @@ async function handleBlockChange(data: {
     if (data.txMeta?.outlinerOp !== "save-block") return;
     if (data.txMeta?.undo || data.txMeta?.redo) return;
 
+    console.log("handleBlockChange", JSON.stringify(data));
+
     const {
       createTimePropertyName,
       updateTimePropertyName,
@@ -176,11 +178,13 @@ async function handleBlockChange(data: {
       includeChildren: false,
     });
 
+    console.log("currentPage", JSON.stringify(currentPage));
+
     if (!currentPage || !currentPage.updatedAt) return;
 
     // 检查页面是否应该被忽略
     if (shouldIgnorePage(currentPage, ignorePages)) return;
-
+    
     const updatedAt = currentPage.updatedAt as number;
     const fileId = currentPage.file?.id;
 
@@ -198,6 +202,13 @@ async function handleBlockChange(data: {
       preferredDateFormat
     );
 
+    console.log("准备调用 handleDate", {
+      pageUuid: currentPage.uuid,
+      formattedUpdatedAt,
+      formattedCreatedAt,
+      updateTimePropertyName,
+      createTimePropertyName
+    });
     // 在后台处理日期更新，不阻塞主流程
     handleDate(
       currentPage.uuid,
@@ -232,19 +243,32 @@ async function handleDate(
   updateTimePropertyName: string,
   createTimePropertyName: string
 ) {
+  console.log("handleDate 开始执行", { pageIdentity, updatedAt, createdAt, updateTimePropertyName, createTimePropertyName });
   const currentBlocksTree = await logseq.Editor.getPageBlocksTree(pageIdentity);
 
-  if (!currentBlocksTree || currentBlocksTree.length === 0) return;
+  if (!currentBlocksTree || currentBlocksTree.length === 0) {
+    console.log("handleDate 提前退出: 页面块树为空");
+    return;
+  }
 
   const firstBlock = await logseq.Editor.getBlock(currentBlocksTree[0].uuid);
+  console.log("获取到第一个块:", { blockUuid: currentBlocksTree[0].uuid, content: firstBlock?.content });
 
-  if (!firstBlock) return;
+  if (!firstBlock) {
+    console.log("handleDate 提前退出: 无法获取第一个块");
+    return;
+  }
 
   // 如果已经有 created 属性，并且 updated 属性也是当天的话就直接退出
   if (
     firstBlock.content?.includes(`${createTimePropertyName}:: `) &&
     firstBlock.content?.includes(`${updateTimePropertyName}:: `)
   ) {
+    console.log("检测到页面已有属性", { 
+      hasCreated: firstBlock.content?.includes(`${createTimePropertyName}:: `),
+      hasUpdated: firstBlock.content?.includes(`${updateTimePropertyName}:: `)
+    });
+    
     const created = firstBlock.content?.match(
       new RegExp(
         `${createTimePropertyName}:: \\[\\[([^\\]]+)\\]\\](?:\\r?\\n|$)`
@@ -255,8 +279,17 @@ async function handleDate(
         `${updateTimePropertyName}:: \\[\\[${updatedAt}\\]\\](?:\\r?\\n|$)`
       )
     );
+    
+    console.log("正则匹配结果:", { 
+      createdMatch: created ? created[0] : null,
+      updatedMatch: updated ? updated[0] : null,
+      expectedUpdatedAt: updatedAt
+    });
 
-    if (created && updated) return;
+    if (created && updated) {
+      console.log("handleDate 提前退出: 已有相同的创建和更新时间属性");
+      return;
+    }
   }
 
   // 处理已有 updated 属性或者 created 属性的情况
@@ -264,6 +297,7 @@ async function handleDate(
     firstBlock.content?.includes(`${updateTimePropertyName}:: `) ||
     firstBlock.content?.includes(`${createTimePropertyName}:: `)
   ) {
+    console.log("调用 updateExistingProperties 更新已有属性");
     await updateExistingProperties(
       firstBlock,
       currentBlocksTree[0].uuid,
@@ -273,6 +307,7 @@ async function handleDate(
       createTimePropertyName
     );
   } else {
+    console.log("调用 addNewProperties 添加新属性");
     await addNewProperties(
       firstBlock,
       currentBlocksTree[0].uuid,
@@ -282,6 +317,7 @@ async function handleDate(
       createTimePropertyName
     );
   }
+  console.log("handleDate 执行完成");
 }
 
 /**
@@ -295,25 +331,35 @@ async function updateExistingProperties(
   updateTimePropertyName: string,
   createTimePropertyName: string
 ) {
+  console.log("updateExistingProperties 开始执行", { blockUuid, updatedAt, createdAt });
   const oldContent = firstBlock.content;
   let newContent = oldContent;
 
   // 更新 updated 属性
   if (oldContent.includes(`${updateTimePropertyName}:: `)) {
+    console.log("更新已有的 updated 属性");
+    const oldRegex = new RegExp(
+      `${updateTimePropertyName}:: \\[\\[[^\\]]+\\]\\](?:\\r?\\n|$)`
+    );
+    const oldMatch = oldContent.match(oldRegex);
+    console.log("旧的 updated 属性:", oldMatch ? oldMatch[0] : "未找到匹配");
+    
     newContent = newContent.replace(
-      new RegExp(
-        `${updateTimePropertyName}:: \\[\\[[^\\]]+\\]\\](?:\\r?\\n|$)`
-      ),
+      oldRegex,
       `${updateTimePropertyName}:: [[${updatedAt}]]\n`
     );
   } else {
     // 如果没有 updated 属性，添加它
+    console.log("添加新的 updated 属性");
     newContent = `${newContent}\n${updateTimePropertyName}:: [[${updatedAt}]]\n`;
   }
 
   // 如果没有 created 属性，添加它;如果有的话不动，因为创建时间不会变
   if (!oldContent.includes(`${createTimePropertyName}:: `)) {
+    console.log("添加新的 created 属性");
     newContent = `${newContent}\n${createTimePropertyName}:: [[${createdAt}]]\n`;
+  } else {
+    console.log("保留已有的 created 属性");
   }
 
   await logseq.Editor.updateBlock(blockUuid, newContent);
@@ -330,23 +376,41 @@ async function addNewProperties(
   updateTimePropertyName: string,
   createTimePropertyName: string
 ) {
+  console.log("addNewProperties 开始执行", { blockUuid, updatedAt, createdAt });
   // 检查第一个块是否为属性块（每行都是 xxx:: xxx 的形式）
   const oldContent = firstBlock?.content;
   const isPropertyBlock = oldContent
     ?.split("\n")
     .every((line) => line.trim() === "" || /^[^:]+::/.test(line.trim()));
+  
+  console.log("属性块检查:", { isPropertyBlock, oldContent });
 
   // 如果是属性块，直接在末尾添加新的属性
   if (isPropertyBlock) {
+    console.log("向属性块添加新属性");
     const newContent = `${oldContent}\n${createTimePropertyName}:: [[${createdAt}]]\n${updateTimePropertyName}:: [[${updatedAt}]]\n`;
-    await logseq.Editor.updateBlock(blockUuid, newContent);
+    console.log("准备更新块", { blockUuid, oldContent, newContent });
+    try {
+      await logseq.Editor.updateBlock(blockUuid, newContent);
+      console.log("块更新成功");
+    } catch (error) {
+      console.error("块更新失败:", error);
+    }
   } else {
     // 如果不是属性块，创建新的属性块
-    await logseq.Editor.insertBlock(
-      firstBlock.uuid,
-      `${createTimePropertyName}:: [[${createdAt}]]\n${updateTimePropertyName}:: [[${updatedAt}]]\n`,
-      { before: true }
-    );
+    console.log("创建新的属性块");
+    const newContent = `${createTimePropertyName}:: [[${createdAt}]]\n${updateTimePropertyName}:: [[${updatedAt}]]\n`;
+    console.log("准备插入块", { parentUuid: firstBlock.uuid, newContent, before: true });
+    try {
+      await logseq.Editor.insertBlock(
+        firstBlock.uuid,
+        newContent,
+        { before: true }
+      );
+      console.log("块插入成功");
+    } catch (error) {
+      console.error("块插入失败:", error);
+    }
   }
 }
 
