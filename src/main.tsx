@@ -333,7 +333,7 @@ async function updateExistingProperties(
 ) {
   console.log("updateExistingProperties 开始执行", { blockUuid, updatedAt, createdAt });
   const oldContent = firstBlock.content;
-  let newContent = oldContent;
+  let newContent = oldContent.trim();
 
   // 更新 updated 属性
   if (oldContent.includes(`${updateTimePropertyName}:: `)) {
