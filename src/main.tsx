@@ -12,7 +12,7 @@ import {
   PageEntity,
   PageIdentity,
 } from "@logseq/libs/dist/LSPlugin.user";
-import { LRUCache } from "lru-cache";
+
 
 const pluginId = pluginInfo.id;
 
@@ -60,12 +60,6 @@ async function getGitFileCreationTime(fileId: number) {
         .then(t => { if (t) console.log(`[git-creation-time] .org 文件结果: ${new Date(t).toISOString()}`); return t; })
     );
   }
-
-  // 策略3: 当前文件的简单 git log（追踪重命名）
-  timePromises.push(
-    tryGetGitCreationTimeWithFollow(logseqGraphFolder, filePath)
-      .then(t => { if (t) console.log(`[git-creation-time] 简单 git log 结果: ${new Date(t).toISOString()}`); return t; })
-  );
 
   // 并行执行所有策略
   const times = await Promise.all(timePromises);
@@ -157,15 +151,13 @@ async function tryGetOriginalFileName(
   }
 }
 
-// 创建一个缓存对象来存储文件创建时间，避免重复查询
-// LRUCache<fileId, creationTime>
-const gitCreationTimeCache = new LRUCache<number, number>({
-  max: 1000,
-  ttl: 1000 * 60 * 60 * 24,
-  fetchMethod: async (fileId) => {
-    return await getGitFileCreationTime(fileId);
-  },
-});
+// 正在进行中的 git 查询 map，用于去重并发请求
+// 当同一个 fileId 的 git 查询正在运行时，后续请求直接等待相同的 Promise
+const inflightFetches = new Map<number, Promise<number>>();
+
+// git 创建时间缓存（首次 commit 时间不会变，用普通 Map 即可）
+// Map<fileId, creationTimeMs>
+const gitCreationTimeCache = new Map<number, number>();
 
 /**
  * 初始化插件设置
@@ -206,11 +198,30 @@ async function getPageCreationTime(
 ): Promise<number> {
   if (!fileId) {
     return fallbackTime;
-   } else if (useGitCreationTime) {
-    return gitCreationTimeCache
-      .fetch(fileId)
-      .then((result) => result as number)
-      .catch(() => fallbackTime);
+  } else if (useGitCreationTime) {
+    // 先检查 LRU cache（已有结果）
+    const cached = gitCreationTimeCache.get(fileId);
+    if (cached !== undefined) return cached;
+
+    // 如果已经有正在进行的 git 查询，直接等待同一个 Promise（避免 race condition）
+    const inflight = inflightFetches.get(fileId);
+    if (inflight) {
+      console.log(`[git-creation-time] fileId=${fileId} 查询进行中，等待已有的 Promise`);
+      return inflight.catch(() => fallbackTime);
+    }
+
+    // 发起新的查询，并登记到 inflight map
+    const fetchPromise = getGitFileCreationTime(fileId)
+      .then((result) => {
+        gitCreationTimeCache.set(fileId, result);
+        return result;
+      })
+      .finally(() => {
+        inflightFetches.delete(fileId);
+      });
+
+    inflightFetches.set(fileId, fetchPromise);
+    return fetchPromise.catch(() => fallbackTime);
   }
   return fallbackTime;
 }
