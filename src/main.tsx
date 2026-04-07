@@ -402,7 +402,7 @@ function registerRouteChangeListener() {
 
       // 只有在浏览页面时才触发（排除图谱、设置页面等）
       if (template === "/page/:name") {
-        const pageName = path.replace(/^\/page\//, '');
+        const pageName = decodeURIComponent(path.replace(/^\/page\//, ''));
         if (!pageName) return;
 
         const currentPage = await logseq.Editor.getPage(pageName, {
