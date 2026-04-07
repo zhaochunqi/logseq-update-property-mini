@@ -61,6 +61,32 @@ async function getGitFileCreationTime(fileId: number) {
     );
   }
 
+  // 策略4: 尝试通过 git log --follow 查找原始文件名，再尝试 .org 版本
+  // 这必须并行执行，因为原始文件名可能指向更古老的 .org 版本
+  // 为避免阻塞，直接作为一个独立的 promise 推入 timePromises
+  timePromises.push(
+    tryGetOriginalFileName(logseqGraphFolder, filePath).then(async (originalName) => {
+      if (originalName && originalName !== filePath) {
+        console.log(`[git-creation-time] 发现原始文件名: ${originalName}`);
+        // 可以是直接的 .org（不需要替换），或需要从 .md 替换为 .org
+        let orgOriginalPath = originalName;
+        if (/\.md$/i.test(originalName)) {
+           orgOriginalPath = originalName.replace(/\.md$/i, ".org");
+        }
+        
+        console.log(`[git-creation-time] 尝试原始文件的 .org 版本: ${orgOriginalPath}`);
+        const orgOriginalTime = await tryGetGitCreationTimeWithFollow(logseqGraphFolder, orgOriginalPath);
+        if (orgOriginalTime) {
+          console.log(`[git-creation-time] 通过原始 .org 文件获取到创建时间: ${new Date(orgOriginalTime).toISOString()}`);
+          return orgOriginalTime;
+        }
+      }
+      return null;
+    })
+  );
+
+  // 加上原名字如果是 .org 结尾的情况的逻辑，上面已经包含在 originalName 当作原文件直接 tryGetGitCreationTimeWithFollow 了，当它不含 .md 结尾时也会原样传入。
+
   // 并行执行所有策略
   const times = await Promise.all(timePromises);
   const validTimes = times.filter((t): t is number => t !== null);
@@ -71,25 +97,10 @@ async function getGitFileCreationTime(fileId: number) {
     return earliest;
   }
 
-  // 策略4: 尝试通过 git log --follow 查找原始文件名，再尝试 .org 版本
-  const originalName = await tryGetOriginalFileName(logseqGraphFolder, filePath);
-  if (originalName && originalName !== filePath) {
-    console.log(`[git-creation-time] 发现原始文件名: ${originalName}`);
-    if (/\.md$/i.test(originalName)) {
-      const orgOriginalPath = originalName.replace(/\.md$/i, ".org");
-      console.log(`[git-creation-time] 尝试原始文件的 .org 版本: ${orgOriginalPath}`);
-      const orgOriginalTime = await tryGetGitCreationTimeWithFollow(logseqGraphFolder, orgOriginalPath);
-      if (orgOriginalTime) {
-        console.log(`[git-creation-time] 通过原始 .org 文件获取到创建时间: ${new Date(orgOriginalTime).toISOString()}`);
-        return orgOriginalTime;
-      }
-    }
-  }
-
   throw new Error("cannot get git creation time");
 }
 
-// 使用 --follow --reverse 追踪文件完整历史，取最早的提交时间
+// 追踪文件完整历史，取最早的提交时间（不用 --reverse，因为它和 --follow 结合有 bug）
 async function tryGetGitCreationTimeWithFollow(
   logseqGraphFolder: string,
   filePath: string
@@ -101,7 +112,6 @@ async function tryGetGitCreationTimeWithFollow(
       "log",
       "--format=%at",
       "--follow",
-      "--reverse",
       "--",
       filePath,
     ];
@@ -110,11 +120,14 @@ async function tryGetGitCreationTimeWithFollow(
       Promise.reject(new Error("Git helper unavailable")));
     if (!result.stdout) return null;
 
-    // --reverse 后第一行就是最早的提交时间
-    const firstLine = result.stdout.trim().split("\n")[0];
-    if (!/^\d+$/.test(firstLine)) return null;
+    // git log 默认最新在最前，所以按行分割后，最后一行是最早的提交时间
+    const lines = result.stdout.trim().split("\n").filter(Boolean);
+    if (lines.length === 0) return null;
+    
+    const lastLine = lines[lines.length - 1];
+    if (!/^\d+$/.test(lastLine)) return null;
 
-    return Number(firstLine) * 1000;
+    return Number(lastLine) * 1000;
   } catch {
     return null;
   }
@@ -126,7 +139,7 @@ async function tryGetOriginalFileName(
   filePath: string
 ): Promise<string | null> {
   try {
-    // 使用 --follow --name-only --diff-filter=A 查找文件最初被添加时的名字
+    // 查找文件最初被添加时的名字，使用 -z 解决含有中文时 core.quotepath 引起的双引号问题
     const gitCommand = [
       "-C",
       logseqGraphFolder,
@@ -134,7 +147,7 @@ async function tryGetOriginalFileName(
       "--follow",
       "--name-only",
       "--format=",
-      "--reverse",
+      "-z",
       "--",
       filePath,
     ];
@@ -143,9 +156,9 @@ async function tryGetOriginalFileName(
       Promise.reject(new Error("Git helper unavailable")));
     if (!result.stdout) return null;
 
-    // --reverse 后第一个非空行就是最早的文件名
-    const lines = result.stdout.trim().split("\n").filter((l: string) => l.trim());
-    return lines.length > 0 ? lines[0].trim() : null;
+    // 分割 \0，取最后一个非空的项（最新在前，最旧在后）
+    const lines = result.stdout.split("\0").filter((l: string) => l.trim());
+    return lines.length > 0 ? lines[lines.length - 1].trim() : null;
   } catch {
     return null;
   }
