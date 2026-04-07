@@ -1,6 +1,6 @@
 import "@logseq/libs";
 
-import { format } from "date-fns";
+import { format, parse, isValid } from "date-fns";
 
 import "./index.css";
 import { settingSchema } from "./libs/settings";
@@ -159,6 +159,15 @@ const inflightFetches = new Map<number, Promise<number>>();
 // Map<fileId, creationTimeMs>
 const gitCreationTimeCache = new Map<number, number>();
 
+// 每个页面的串行锁，防止同一页面的多次 checkAndUpdatePage 并发执行
+// Map<pageId, Promise<void>>
+const pageLocks = new Map<number, Promise<void>>();
+
+// handleBlockChange 的 debounce timer map
+// Map<pageId, timeoutId>
+const pageDebounceTimers = new Map<number, ReturnType<typeof setTimeout>>();
+const DEBOUNCE_MS = 500;
+
 /**
  * 初始化插件设置
  */
@@ -189,17 +198,16 @@ async function loadSettingsSchema() {
  * 获取页面创建时间
  * @param fileId 文件ID
  * @param useGitCreationTime 是否使用Git创建时间
- * @param fallbackTime 默认时间
+ * @returns 成功返回时间戳，失败/无配置返回 null
  */
 async function getPageCreationTime(
   fileId: number | undefined,
-  useGitCreationTime: boolean,
-  fallbackTime: number
-): Promise<number> {
+  useGitCreationTime: boolean
+): Promise<number | null> {
   if (!fileId) {
-    return fallbackTime;
+    return null;
   } else if (useGitCreationTime) {
-    // 先检查 LRU cache（已有结果）
+    // 先检查缓存（已有结果）
     const cached = gitCreationTimeCache.get(fileId);
     if (cached !== undefined) return cached;
 
@@ -207,7 +215,7 @@ async function getPageCreationTime(
     const inflight = inflightFetches.get(fileId);
     if (inflight) {
       console.log(`[git-creation-time] fileId=${fileId} 查询进行中，等待已有的 Promise`);
-      return inflight.catch(() => fallbackTime);
+      return inflight.catch(() => null);
     }
 
     // 发起新的查询，并登记到 inflight map
@@ -221,9 +229,9 @@ async function getPageCreationTime(
       });
 
     inflightFetches.set(fileId, fetchPromise);
-    return fetchPromise.catch(() => fallbackTime);
+    return fetchPromise.catch(() => null);
   }
-  return fallbackTime;
+  return null;
 }
 
 /**
@@ -251,9 +259,39 @@ function shouldIgnorePage(page: PageEntity, ignorePages?: string): boolean {
 }
 
 /**
- * 处理数据块变化
+ * 带串行锁的页面更新入口
+ * 保证同一 pageId 的 checkAndUpdatePage 不会并发执行
  */
-async function handleBlockChange(data: {
+async function serializedCheckAndUpdatePage(currentPage: PageEntity) {
+  const pageId = currentPage.id as number;
+  if (!pageId) return;
+
+  // 等待前一个同页面操作完成
+  const prevLock = pageLocks.get(pageId);
+  
+  let resolve: () => void;
+  const myLock = new Promise<void>((r) => { resolve = r; });
+  pageLocks.set(pageId, myLock);
+
+  try {
+    if (prevLock) {
+      console.log(`[lock] pageId=${pageId} 等待前一个操作完成...`);
+      await prevLock;
+    }
+    await checkAndUpdatePage(currentPage);
+  } finally {
+    resolve!();
+    // 只在自己的锁还在时清理（避免清理掉后续排队的锁）
+    if (pageLocks.get(pageId) === myLock) {
+      pageLocks.delete(pageId);
+    }
+  }
+}
+
+/**
+ * 处理数据块变化（带 debounce）
+ */
+function handleBlockChange(data: {
   blocks: BlockEntity[];
   txData: IDatom[];
   txMeta?: {
@@ -261,31 +299,44 @@ async function handleBlockChange(data: {
     [key: string]: any;
   };
 }) {
-  try {
-    // 过滤不相关的操作
-    if (data.txMeta?.outlinerOp !== "save-block") return;
-    if (data.txMeta?.undo || data.txMeta?.redo) return;
+  // 过滤不相关的操作（同步检查，无需 debounce）
+  if (data.txMeta?.outlinerOp !== "save-block") return;
+  if (data.txMeta?.undo || data.txMeta?.redo) return;
+  if (!data.blocks?.length) return;
 
-    console.log("handleBlockChange", JSON.stringify(data));
+  const blockUuid = data.blocks[0].uuid;
 
-    // 并行获取块信息
-    if (!data.blocks?.length) return;
-    const block = await logseq.Editor.getBlock(data.blocks[0].uuid);
+  // 异步获取 pageId，然后 debounce
+  logseq.Editor.getBlock(blockUuid).then(async (block) => {
     const pageId = block?.page.id as number;
     if (!pageId) return;
 
-    const currentPage = await logseq.Editor.getPage(pageId, {
-      includeChildren: false,
-    });
+    // 清除该页面之前的 debounce timer
+    const existingTimer = pageDebounceTimers.get(pageId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
 
-    console.log("currentPage", JSON.stringify(currentPage));
+    // 设置新的 debounce timer
+    pageDebounceTimers.set(pageId, setTimeout(async () => {
+      pageDebounceTimers.delete(pageId);
+      try {
+        // debounce 结束后重新获取最新的 page 数据
+        const currentPage = await logseq.Editor.getPage(pageId, {
+          includeChildren: false,
+        });
 
-    if (!currentPage || !currentPage.updatedAt) return;
+        if (!currentPage || !currentPage.updatedAt) return;
 
-    await checkAndUpdatePage(currentPage);
-  } catch (error) {
-    console.error("Error in handleBlockChange:", error);
-  }
+        console.log(`[debounce] pageId=${pageId} debounce 结束，开始处理`);
+        await serializedCheckAndUpdatePage(currentPage);
+      } catch (error) {
+        console.error("Error in debounced handleBlockChange:", error);
+      }
+    }, DEBOUNCE_MS));
+  }).catch((error) => {
+    console.error("Error getting block in handleBlockChange:", error);
+  });
 }
 
 /**
@@ -308,34 +359,32 @@ async function checkAndUpdatePage(currentPage: PageEntity) {
     const fileId = currentPage.file?.id;
 
     // 获取配置和时间
-    const [userConfigs, resolvedCreatedAt] = await Promise.all([
+    const [userConfigs, resolvedCreatedAtMs] = await Promise.all([
       logseq.App.getUserConfigs(),
-      getPageCreationTime(fileId, useGitCreationTime, new Date().getTime()),
+      getPageCreationTime(fileId, useGitCreationTime),
     ]);
+
+    // 如果无法获取 Git 时间，使用当前时间作为 fallback（但标记这是一个 fallback）
+    const isFallbackCreationTime = resolvedCreatedAtMs === null;
+    const finalCreatedAtMs = resolvedCreatedAtMs ?? new Date().getTime();
 
     // 将时间戳转换为用户首选的日期格式
     const { preferredDateFormat } = userConfigs;
     const formattedUpdatedAt = format(new Date(updatedAt), preferredDateFormat);
     const formattedCreatedAt = format(
-      new Date(resolvedCreatedAt),
+      new Date(finalCreatedAtMs),
       preferredDateFormat
     );
 
-    console.log("准备调用 handleDate", {
-      pageUuid: currentPage.uuid,
-      formattedUpdatedAt,
-      formattedCreatedAt,
-      updateTimePropertyName,
-      createTimePropertyName
-    });
-    // 等待 handleDate 完成（如果你希望它在后台运行也可以去除 await）
     await handleDate(
       currentPage.uuid,
       formattedUpdatedAt,
       formattedCreatedAt,
       updateTimePropertyName,
       createTimePropertyName,
-      forceUpdateCreatedTime
+      forceUpdateCreatedTime,
+      isFallbackCreationTime,
+      preferredDateFormat
     );
   } catch (error) {
     console.error("Error in checkAndUpdatePage:", error);
@@ -362,7 +411,7 @@ function registerRouteChangeListener() {
 
         if (currentPage && currentPage.updatedAt) {
           console.log(`[route-change] 进入页面 ${pageName}，触发日期检查...`);
-          await checkAndUpdatePage(currentPage);
+          await serializedCheckAndUpdatePage(currentPage);
         }
       }
     } catch (error) {
@@ -375,10 +424,8 @@ function registerRouteChangeListener() {
  * 注册数据块变化监听器
  */
 function registerBlockChangeListener() {
-  logseq.DB.onChanged(async (data) => {
-    await handleBlockChange(data).catch((error) => {
-      console.error("Error handling block change:", error);
-    });
+  logseq.DB.onChanged((data) => {
+    handleBlockChange(data);
   });
 }
 
@@ -391,9 +438,11 @@ async function handleDate(
   createdAt: string,
   updateTimePropertyName: string,
   createTimePropertyName: string,
-  forceUpdateCreatedTime: boolean
+  forceUpdateCreatedTime: boolean,
+  isFallbackCreationTime: boolean,
+  preferredDateFormat: string
 ) {
-  console.log("handleDate 开始执行", { pageIdentity, updatedAt, createdAt, updateTimePropertyName, createTimePropertyName, forceUpdateCreatedTime });
+  console.log("handleDate 开始执行", { pageIdentity, updatedAt, createdAt, updateTimePropertyName, createTimePropertyName, forceUpdateCreatedTime, isFallbackCreationTime });
   const currentBlocksTree = await logseq.Editor.getPageBlocksTree(pageIdentity);
 
   if (!currentBlocksTree || currentBlocksTree.length === 0) {
@@ -426,8 +475,18 @@ async function handleDate(
     );
     
     let createdIsCorrect = true;
-    if (forceUpdateCreatedTime && created) {
-      createdIsCorrect = created[1] === createdAt;
+    if (forceUpdateCreatedTime && !isFallbackCreationTime && created) {
+      // 防御规则：created 只能往回走，绝不能往前走
+      // 解析已有的 created 日期和新的 created 日期进行比较
+      const existingDate = parse(created[1], preferredDateFormat, new Date());
+      const newDate = parse(createdAt, preferredDateFormat, new Date());
+      if (isValid(existingDate) && isValid(newDate) && newDate >= existingDate) {
+        // 新日期不比旧日期更早，保留原样
+        console.log(`[guard] 新 created 日期 (${createdAt}) 不比已有日期 (${created[1]}) 更早，跳过更新`);
+        createdIsCorrect = true;
+      } else {
+        createdIsCorrect = created[1] === createdAt;
+      }
     }
 
     console.log("正则匹配结果:", { 
@@ -456,7 +515,9 @@ async function handleDate(
       createdAt,
       updateTimePropertyName,
       createTimePropertyName,
-      forceUpdateCreatedTime
+      forceUpdateCreatedTime,
+      isFallbackCreationTime,
+      preferredDateFormat
     );
   } else {
     console.log("调用 addNewProperties 添加新属性");
@@ -482,7 +543,9 @@ async function updateExistingProperties(
   createdAt: string,
   updateTimePropertyName: string,
   createTimePropertyName: string,
-  forceUpdateCreatedTime: boolean
+  forceUpdateCreatedTime: boolean,
+  isFallbackCreationTime: boolean,
+  preferredDateFormat: string
 ) {
   console.log("updateExistingProperties 开始执行", { blockUuid, updatedAt, createdAt });
   const oldContent = firstBlock.content;
@@ -512,18 +575,38 @@ async function updateExistingProperties(
     console.log("添加新的 created 属性");
     newContent = `${newContent}\n${createTimePropertyName}:: [[${createdAt}]]\n`;
   } else {
-    if (forceUpdateCreatedTime) {
+    // 只有当开启了 forceUpdate，且拿到了真实的 Git 时间（非 fallback），
+    // 且新日期比现有日期更早时，才覆盖已有的 created 时间！
+    if (forceUpdateCreatedTime && !isFallbackCreationTime) {
       const createdRegex = new RegExp(
-        `${createTimePropertyName}:: \\[\\[[^\\]]+\\]\\](?:\\r?\\n|$)`
+        `${createTimePropertyName}:: \\[\\[([^\\]]+)\\]\\](?:\\r?\\n|$)`
       );
       const oldCreatedMatch = oldContent.match(createdRegex);
-      console.log("强制更新已接存在的 created 属性:", oldCreatedMatch ? oldCreatedMatch[0].trim() : "未找到匹配", "->", `${createTimePropertyName}:: [[${createdAt}]]`);
-      newContent = newContent.replace(
-        createdRegex,
-        `${createTimePropertyName}:: [[${createdAt}]]\n`
-      );
+      
+      // 防御规则：created 只能往回走，绝不能往前走
+      let shouldUpdate = true;
+      if (oldCreatedMatch) {
+        const existingDate = parse(oldCreatedMatch[1], preferredDateFormat, new Date());
+        const newDate = parse(createdAt, preferredDateFormat, new Date());
+        if (isValid(existingDate) && isValid(newDate) && newDate >= existingDate) {
+          shouldUpdate = false;
+          console.log(`[guard] 不覆盖 created: 新日期 (${createdAt}) 不比已有日期 (${oldCreatedMatch[1]}) 更早`);
+        }
+      }
+      
+      if (shouldUpdate) {
+        console.log("强制更新已存在的 created 属性:", oldCreatedMatch ? oldCreatedMatch[0].trim() : "未找到匹配", "->", `${createTimePropertyName}:: [[${createdAt}]]`);
+        // 需要用不带捕获组的 regex 来 replace
+        const replaceRegex = new RegExp(
+          `${createTimePropertyName}:: \\[\\[[^\\]]+\\]\\](?:\\r?\\n|$)`
+        );
+        newContent = newContent.replace(
+          replaceRegex,
+          `${createTimePropertyName}:: [[${createdAt}]]\n`
+        );
+      }
     } else {
-      console.log("保留已有的 created 属性");
+      console.log(`保留已有的 created 属性 (forceUpdate=${forceUpdateCreatedTime}, isFallback=${isFallbackCreationTime})`);
     }
   }
 
