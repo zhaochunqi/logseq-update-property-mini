@@ -29,4 +29,18 @@ export const settingSchema: Array<SettingSchemaDesc> = [
     title: "忽略的页面",
     description: "忽略的页面，用逗号分隔",
   },
+  {
+    key: "forceUpdateCreatedTime",
+    type: "boolean",
+    default: false,
+    title: "强制更新创建时间",
+    description: "开启时，如果发现已存在的 created 时间与 Git 时间不一致，将强制更新覆盖它。",
+  },
+  {
+    key: "checkOnPageLoad",
+    type: "boolean",
+    default: false,
+    title: "切换页面时自动检查",
+    description: "开启后，每次进入页面时都会自动执行日期检查和更新（无需修改页面内容）。",
+  },
 ];
