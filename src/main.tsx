@@ -23,7 +23,7 @@ interface Settings {
   ignorePages: string;
 }
 
-// 将 getGitFileCreationTime 函数提到全局作用域
+// 获取 git 文件创建时间，支持 .md -> .org 重命名场景
 async function getGitFileCreationTime(fileId: number) {
   // 使用 :find ?file . 语法直接返回单一值
   const filePathResult = await logseq.DB.datascriptQuery(
@@ -32,32 +32,157 @@ async function getGitFileCreationTime(fileId: number) {
   if (!filePathResult) throw new Error("file not found");
 
   const filePath = filePathResult;
-
-  // 通过 git 命令来获取文件的创建时间
   const logseqGraphFolder = (await logseq.App.getCurrentGraph())?.path;
   if (!logseqGraphFolder) throw new Error("logseq graph folder not found");
 
-  const gitCommand = [
-    "-C",
-    logseqGraphFolder,
-    "log",
-    "--diff-filter=A",
-    "--format=%at",
-    "--reverse",
-    "--",
-    filePath,
-  ];
+  console.log(`[git-creation-time] 开始获取文件创建时间: ${filePath}`);
 
-  const result = await (logseq.Git?.execCommand?.(gitCommand) ??
-    Promise.reject(new Error("Git helper unavailable")));
-  if (!result.stdout) throw new Error("cannot get git creation time");
+  // 并行收集所有可能的创建时间，最终取最早（最小）的那个。
+  // 这样即使 --follow 在 .md 上成功返回了（但只是 .md 的创建时间），
+  // .org 的更早时间也不会被忽略。
+  const timePromises: Promise<number | null>[] = [];
 
-  // verify the creation time is a number
-  const creationTimeStr = result.stdout.trim();
-  if (!/^\d+$/.test(creationTimeStr))
-    throw new Error("invalid git creation timestamp");
+  // 策略1: 使用 --follow 追踪当前文件的完整重命名历史
+  timePromises.push(
+    tryGetGitCreationTimeWithFollow(logseqGraphFolder, filePath)
+      .then(t => { if (t) console.log(`[git-creation-time] --follow 结果: ${new Date(t).toISOString()}`); return t; })
+  );
 
-  return Number(creationTimeStr) * 1000;
+  // 策略2: 如果当前文件是 .md，直接查找同路径下的 .org 文件的 git 历史
+  // （处理文件从 .org 转为 .md 但 git 未能识别为重命名的场景）
+  if (/\.md$/i.test(filePath)) {
+    const orgFilePath = filePath.replace(/\.md$/i, ".org");
+    console.log(`[git-creation-time] 同时查找 .org 文件历史: ${orgFilePath}`);
+    timePromises.push(
+      tryGetGitCreationTimeSimple(logseqGraphFolder, orgFilePath)
+        .then(t => { if (t) console.log(`[git-creation-time] .org 文件结果: ${new Date(t).toISOString()}`); return t; })
+    );
+  }
+
+  // 策略3: 当前文件的简单 git log（不追踪重命名）
+  timePromises.push(
+    tryGetGitCreationTimeSimple(logseqGraphFolder, filePath)
+      .then(t => { if (t) console.log(`[git-creation-time] 简单 git log 结果: ${new Date(t).toISOString()}`); return t; })
+  );
+
+  // 并行执行所有策略
+  const times = await Promise.all(timePromises);
+  const validTimes = times.filter((t): t is number => t !== null);
+
+  if (validTimes.length > 0) {
+    const earliest = Math.min(...validTimes);
+    console.log(`[git-creation-time] 最终选择最早时间: ${new Date(earliest).toISOString()} (从 ${validTimes.length} 个结果中)`);
+    return earliest;
+  }
+
+  // 策略4: 尝试通过 git log --follow 查找原始文件名，再尝试 .org 版本
+  const originalName = await tryGetOriginalFileName(logseqGraphFolder, filePath);
+  if (originalName && originalName !== filePath) {
+    console.log(`[git-creation-time] 发现原始文件名: ${originalName}`);
+    if (/\.md$/i.test(originalName)) {
+      const orgOriginalPath = originalName.replace(/\.md$/i, ".org");
+      console.log(`[git-creation-time] 尝试原始文件的 .org 版本: ${orgOriginalPath}`);
+      const orgOriginalTime = await tryGetGitCreationTimeSimple(logseqGraphFolder, orgOriginalPath);
+      if (orgOriginalTime) {
+        console.log(`[git-creation-time] 通过原始 .org 文件获取到创建时间: ${new Date(orgOriginalTime).toISOString()}`);
+        return orgOriginalTime;
+      }
+    }
+  }
+
+  throw new Error("cannot get git creation time");
+}
+
+// 使用 --follow --reverse 追踪文件完整历史，取最早的提交时间
+async function tryGetGitCreationTimeWithFollow(
+  logseqGraphFolder: string,
+  filePath: string
+): Promise<number | null> {
+  try {
+    const gitCommand = [
+      "-C",
+      logseqGraphFolder,
+      "log",
+      "--format=%at",
+      "--follow",
+      "--reverse",
+      "--",
+      filePath,
+    ];
+
+    const result = await (logseq.Git?.execCommand?.(gitCommand) ??
+      Promise.reject(new Error("Git helper unavailable")));
+    if (!result.stdout) return null;
+
+    // --reverse 后第一行就是最早的提交时间
+    const firstLine = result.stdout.trim().split("\n")[0];
+    if (!/^\d+$/.test(firstLine)) return null;
+
+    return Number(firstLine) * 1000;
+  } catch {
+    return null;
+  }
+}
+
+// 简单的 git log 获取文件首次添加时间（不追踪重命名）
+async function tryGetGitCreationTimeSimple(
+  logseqGraphFolder: string,
+  filePath: string
+): Promise<number | null> {
+  try {
+    const gitCommand = [
+      "-C",
+      logseqGraphFolder,
+      "log",
+      "--diff-filter=A",
+      "--format=%at",
+      "--reverse",
+      "--",
+      filePath,
+    ];
+
+    const result = await (logseq.Git?.execCommand?.(gitCommand) ??
+      Promise.reject(new Error("Git helper unavailable")));
+    if (!result.stdout) return null;
+
+    const firstLine = result.stdout.trim().split("\n")[0];
+    if (!/^\d+$/.test(firstLine)) return null;
+
+    return Number(firstLine) * 1000;
+  } catch {
+    return null;
+  }
+}
+
+// 尝试获取文件重命名前的原始文件名
+async function tryGetOriginalFileName(
+  logseqGraphFolder: string,
+  filePath: string
+): Promise<string | null> {
+  try {
+    // 使用 --follow --name-only --diff-filter=A 查找文件最初被添加时的名字
+    const gitCommand = [
+      "-C",
+      logseqGraphFolder,
+      "log",
+      "--follow",
+      "--name-only",
+      "--format=",
+      "--reverse",
+      "--",
+      filePath,
+    ];
+
+    const result = await (logseq.Git?.execCommand?.(gitCommand) ??
+      Promise.reject(new Error("Git helper unavailable")));
+    if (!result.stdout) return null;
+
+    // --reverse 后第一个非空行就是最早的文件名
+    const lines = result.stdout.trim().split("\n").filter((l: string) => l.trim());
+    return lines.length > 0 ? lines[0].trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 // 创建一个缓存对象来存储文件创建时间，避免重复查询
