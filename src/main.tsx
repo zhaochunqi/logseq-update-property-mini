@@ -647,7 +647,7 @@ async function addNewProperties(
   if (isPropertyBlock) {
     console.log("向属性块添加新属性");
     const updatedPart = skipUpdatedProperty ? '' : `\n${updateTimePropertyName}:: [[${updatedAt}]]`;
-    const newContent = `${oldContent}\n${createTimePropertyName}:: [[${createdAt}]]${updatedPart}\n`;
+    const newContent = `${oldContent.trimEnd()}\n${createTimePropertyName}:: [[${createdAt}]]${updatedPart}\n`;
     console.log("准备更新块", { blockUuid, oldContent, newContent });
     try {
       await logseq.Editor.updateBlock(blockUuid, newContent);
@@ -664,7 +664,7 @@ async function addNewProperties(
     try {
       await logseq.Editor.insertBlock(
         firstBlock.uuid,
-        newContent,
+        newContent.trimEnd(),
         { before: true }
       );
       console.log("块插入成功");

@@ -18,8 +18,8 @@ ${p}:: [[${o}]]
 `;else if(g&&!f){const G=new RegExp(`${p}:: \\[\\[([^\\]]+)\\]\\](?:\\r?\\n|$)`),x=_.match(G);let v=!0;if(x){const b=Yn(x[1],E,new Date),m=Yn(o,E,new Date);hn(b)&&hn(m)&&m>=b&&(v=!1,console.log(`[guard] 不覆盖 created: 新日期 (${o}) 不比已有日期 (${x[1]}) 更早`))}if(v){console.log("强制更新已存在的 created 属性:",x?x[0].trim():"未找到匹配","->",`${p}:: [[${o}]]`);const b=new RegExp(`${p}:: \\[\\[[^\\]]+\\]\\](?:\\r?\\n|$)`);O=O.replace(b,`${p}:: [[${o}]]
 `)}}else console.log(`保留已有的 created 属性 (forceUpdate=${g}, isFallback=${f})`);await logseq.Editor.updateBlock(t,O)}async function xs(a,t,r,o,c,p,g=!1){console.log("addNewProperties 开始执行",{blockUuid:t,updatedAt:r,createdAt:o});const f=a?.content,E=f?.split(`
 `).every(T=>T.trim()===""||/^[^:]+::/.test(T.trim()));if(console.log("属性块检查:",{isPropertyBlock:E,oldContent:f}),E){console.log("向属性块添加新属性");const T=g?"":`
-${c}:: [[${r}]]`,_=`${f}
+${c}:: [[${r}]]`,_=`${f.trimEnd()}
 ${p}:: [[${o}]]${T}
 `;console.log("准备更新块",{blockUuid:t,oldContent:f,newContent:_});try{await logseq.Editor.updateBlock(t,_),console.log("块更新成功")}catch(O){console.error("块更新失败:",O)}}else{console.log("创建新的属性块");const T=g?"":`${c}:: [[${r}]]
 `,_=`${p}:: [[${o}]]
-${T}`;console.log("准备插入块",{parentUuid:a.uuid,newContent:_,before:!0});try{await logseq.Editor.insertBlock(a.uuid,_,{before:!0}),console.log("块插入成功")}catch(O){console.error("块插入失败:",O)}}}async function ks(){console.info(`#${cs}: MAIN`),fs(),await hs(),ws(),bs()}logseq.ready(ks).catch(console.error);
+${T}`;console.log("准备插入块",{parentUuid:a.uuid,newContent:_,before:!0});try{await logseq.Editor.insertBlock(a.uuid,_.trimEnd(),{before:!0}),console.log("块插入成功")}catch(O){console.error("块插入失败:",O)}}}async function ks(){console.info(`#${cs}: MAIN`),fs(),await hs(),ws(),bs()}logseq.ready(ks).catch(console.error);
