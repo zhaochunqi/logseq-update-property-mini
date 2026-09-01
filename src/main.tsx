@@ -290,10 +290,7 @@ function shouldIgnorePage(page: PageEntity, ignorePages?: string): boolean {
  * 带串行锁的页面更新入口
  * 保证同一 pageId 的 checkAndUpdatePage 不会并发执行
  */
-async function serializedCheckAndUpdatePage(
-	currentPage: PageEntity,
-	skipUpdatedProperty = false,
-) {
+async function serializedCheckAndUpdatePage(currentPage: PageEntity) {
 	const pageId = currentPage.id as number;
 	if (!pageId) return;
 
@@ -311,7 +308,7 @@ async function serializedCheckAndUpdatePage(
 			console.log(`[lock] pageId=${pageId} 等待前一个操作完成...`);
 			await prevLock;
 		}
-		await checkAndUpdatePage(currentPage, skipUpdatedProperty);
+		await checkAndUpdatePage(currentPage);
 	} finally {
 		resolve!();
 		// 只在自己的锁还在时清理（避免清理掉后续排队的锁）
@@ -381,10 +378,7 @@ function handleBlockChange(data: {
 /**
  * 检查并更新页面日期属性
  */
-async function checkAndUpdatePage(
-	currentPage: PageEntity,
-	skipUpdatedProperty = false,
-) {
+async function checkAndUpdatePage(currentPage: PageEntity) {
 	try {
 		const {
 			createTimePropertyName,
@@ -427,7 +421,6 @@ async function checkAndUpdatePage(
 			forceUpdateCreatedTime,
 			isFallbackCreationTime,
 			preferredDateFormat,
-			skipUpdatedProperty,
 		);
 	} catch (error) {
 		console.error("Error in checkAndUpdatePage:", error);
@@ -454,7 +447,7 @@ function registerRouteChangeListener() {
 
 				if (currentPage && currentPage.updatedAt) {
 					console.log(`[route-change] 进入页面 ${pageName}，触发日期检查...`);
-					await serializedCheckAndUpdatePage(currentPage, true);
+					await serializedCheckAndUpdatePage(currentPage);
 				}
 			}
 		} catch (error) {
@@ -484,7 +477,6 @@ async function handleDate(
 	forceUpdateCreatedTime: boolean,
 	isFallbackCreationTime: boolean,
 	preferredDateFormat: string,
-	skipUpdatedProperty = false,
 ) {
 	console.log("handleDate 开始执行", {
 		pageIdentity,
@@ -516,8 +508,7 @@ async function handleDate(
 	// 如果已经有 created 属性，并且 updated 属性也是当天的话就直接退出（或者只退出 updated 并考虑 forceUpdate）
 	if (
 		firstBlock.content?.includes(`${createTimePropertyName}:: `) &&
-		(skipUpdatedProperty ||
-			firstBlock.content?.includes(`${updateTimePropertyName}:: `))
+		firstBlock.content?.includes(`${updateTimePropertyName}:: `)
 	) {
 		const created = firstBlock.content?.match(
 			new RegExp(
@@ -558,11 +549,7 @@ async function handleDate(
 			createdIsCorrect,
 		});
 
-		if (
-			created &&
-			(skipUpdatedProperty || updatedCorrect) &&
-			createdIsCorrect
-		) {
+		if (created && updatedCorrect && createdIsCorrect) {
 			console.log(
 				"handleDate 提前退出: 满足退出条件（已存在 created、updated 正确，且创建时间正确或未开启强制更新）",
 			);
@@ -586,7 +573,6 @@ async function handleDate(
 			forceUpdateCreatedTime,
 			isFallbackCreationTime,
 			preferredDateFormat,
-			skipUpdatedProperty,
 		);
 	} else {
 		console.log("调用 addNewProperties 添加新属性");
@@ -597,7 +583,6 @@ async function handleDate(
 			createdAt,
 			updateTimePropertyName,
 			createTimePropertyName,
-			skipUpdatedProperty,
 		);
 	}
 	console.log("handleDate 执行完成");
@@ -616,7 +601,6 @@ async function updateExistingProperties(
 	forceUpdateCreatedTime: boolean,
 	isFallbackCreationTime: boolean,
 	preferredDateFormat: string,
-	skipUpdatedProperty = false,
 ) {
 	console.log("updateExistingProperties 开始执行", {
 		blockUuid,
@@ -626,27 +610,23 @@ async function updateExistingProperties(
 	const oldContent = firstBlock.content;
 	let newContent = oldContent.trim();
 
-	// 更新 updated 属性（仅在非 skipUpdatedProperty 模式下）
-	if (!skipUpdatedProperty) {
-		if (oldContent.includes(`${updateTimePropertyName}:: `)) {
-			console.log("更新已有的 updated 属性");
-			const oldRegex = new RegExp(
-				`${updateTimePropertyName}:: \\[\\[[^\\]]+\\]\\](?:\\r?\\n|$)`,
-			);
-			const oldMatch = oldContent.match(oldRegex);
-			console.log("旧的 updated 属性:", oldMatch ? oldMatch[0] : "未找到匹配");
+	// 更新 updated 属性
+	if (oldContent.includes(`${updateTimePropertyName}:: `)) {
+		console.log("更新已有的 updated 属性");
+		const oldRegex = new RegExp(
+			`${updateTimePropertyName}:: \\[\\[[^\\]]+\\]\\](?:\\r?\\n|$)`,
+		);
+		const oldMatch = oldContent.match(oldRegex);
+		console.log("旧的 updated 属性:", oldMatch ? oldMatch[0] : "未找到匹配");
 
-			newContent = newContent.replace(
-				oldRegex,
-				`${updateTimePropertyName}:: [[${updatedAt}]]\n`,
-			);
-		} else {
-			// 如果没有 updated 属性，添加它
-			console.log("添加新的 updated 属性");
-			newContent = `${newContent}\n${updateTimePropertyName}:: [[${updatedAt}]]\n`;
-		}
+		newContent = newContent.replace(
+			oldRegex,
+			`${updateTimePropertyName}:: [[${updatedAt}]]\n`,
+		);
 	} else {
-		console.log("跳过 updated 属性更新（skipUpdatedProperty=true）");
+		// 如果没有 updated 属性，添加它
+		console.log("添加新的 updated 属性");
+		newContent = `${newContent}\n${updateTimePropertyName}:: [[${updatedAt}]]\n`;
 	}
 
 	// 如果没有 created 属性，添加它;如果已存在，根据 forceUpdateCreatedTime 判断是否覆盖
@@ -719,7 +699,6 @@ async function addNewProperties(
 	createdAt: string,
 	updateTimePropertyName: string,
 	createTimePropertyName: string,
-	skipUpdatedProperty = false,
 ) {
 	console.log("addNewProperties 开始执行", { blockUuid, updatedAt, createdAt });
 	// 检查第一个块是否为属性块（每行都是 xxx:: xxx 的形式）
@@ -733,9 +712,7 @@ async function addNewProperties(
 	// 如果是属性块，直接在末尾添加新的属性
 	if (isPropertyBlock) {
 		console.log("向属性块添加新属性");
-		const updatedPart = skipUpdatedProperty
-			? ""
-			: `\n${updateTimePropertyName}:: [[${updatedAt}]]`;
+		const updatedPart = `\n${updateTimePropertyName}:: [[${updatedAt}]]`;
 		const newContent = `${oldContent.trimEnd()}\n${createTimePropertyName}:: [[${createdAt}]]${updatedPart}\n`;
 		console.log("准备更新块", { blockUuid, oldContent, newContent });
 		try {
@@ -747,9 +724,7 @@ async function addNewProperties(
 	} else {
 		// 如果不是属性块，创建新的属性块
 		console.log("创建新的属性块");
-		const updatedPart = skipUpdatedProperty
-			? ""
-			: `${updateTimePropertyName}:: [[${updatedAt}]]\n`;
+		const updatedPart = `${updateTimePropertyName}:: [[${updatedAt}]]\n`;
 		const newContent = `${createTimePropertyName}:: [[${createdAt}]]\n${updatedPart}`;
 		console.log("准备插入块", {
 			parentUuid: firstBlock.uuid,
