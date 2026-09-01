@@ -7,148 +7,174 @@ import { settingSchema } from "./libs/settings";
 import { logseq as pluginInfo } from "../package.json";
 import { englishSettingSchema } from "./libs/settings_en";
 import {
-  BlockEntity,
-  IDatom,
-  PageEntity,
-  PageIdentity,
+	BlockEntity,
+	IDatom,
+	PageEntity,
+	PageIdentity,
 } from "@logseq/libs/dist/LSPlugin.user";
 
-
 const pluginId = pluginInfo.id;
+const GIT_LOCAL_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z";
 
 interface Settings {
-  createTimePropertyName: string;
-  updateTimePropertyName: string;
-  useGitCreationTime: boolean;
-  ignorePages: string;
-  forceUpdateCreatedTime: boolean;
-  checkOnPageLoad: boolean;
+	createTimePropertyName: string;
+	updateTimePropertyName: string;
+	useGitCreationTime: boolean;
+	ignorePages: string;
+	forceUpdateCreatedTime: boolean;
+	checkOnPageLoad: boolean;
 }
 
 // 获取 git 文件创建时间，支持 .md -> .org 重命名场景
 async function getGitFileCreationTime(fileId: number) {
-  // 使用 :find ?file . 语法直接返回单一值
-  const filePathResult = await logseq.DB.datascriptQuery(
-    `[:find ?file . :where [?b :file/path ?file] [(== ?b ${fileId})]]`
-  );
-  if (!filePathResult) throw new Error("file not found");
+	// 使用 :find ?file . 语法直接返回单一值
+	const filePathResult = await logseq.DB.datascriptQuery(
+		`[:find ?file . :where [?b :file/path ?file] [(== ?b ${fileId})]]`,
+	);
+	if (!filePathResult) throw new Error("file not found");
 
-  const filePath = filePathResult;
+	const filePath = filePathResult;
 
-  console.log(`[git-creation-time] 开始获取文件创建时间: ${filePath}`);
+	console.log(`[git-creation-time] 开始获取文件创建时间: ${filePath}`);
 
-  // 并行收集所有可能的创建时间，最终取最早（最小）的那个。
-  const timePromises: Promise<number | null>[] = [];
+	// 并行收集所有可能的创建时间，最终取最早（最小）的那个。
+	const timePromises: Promise<number | null>[] = [];
 
-  // 策略1: 使用 --follow 追踪当前文件的完整重命名历史
-  timePromises.push(
-    tryGetGitCreationTimeWithFollow(filePath)
-      .then(t => { if (t) console.log(`[git-creation-time] --follow 结果: ${new Date(t).toISOString()}`); return t; })
-  );
+	// 策略1: 使用 --follow 追踪当前文件的完整重命名历史
+	timePromises.push(
+		tryGetGitCreationTimeWithFollow(filePath).then((t) => {
+			if (t)
+				console.log(
+					`[git-creation-time] --follow 结果: ${formatLocalLogDate(t)}`,
+				);
+			return t;
+		}),
+	);
 
-  // 策略2: 如果当前文件是 .md，直接查找同路径下的 .org 文件的 git 历史
-  if (/\.md$/i.test(filePath)) {
-    const orgFilePath = filePath.replace(/\.md$/i, ".org");
-    console.log(`[git-creation-time] 同时查找 .org 文件历史: ${orgFilePath}`);
-    timePromises.push(
-      tryGetGitCreationTimeWithFollow(orgFilePath)
-        .then(t => { if (t) console.log(`[git-creation-time] .org 文件结果: ${new Date(t).toISOString()}`); return t; })
-    );
-  }
+	// 策略2: 如果当前文件是 .md，直接查找同路径下的 .org 文件的 git 历史
+	if (/\.md$/i.test(filePath)) {
+		const orgFilePath = filePath.replace(/\.md$/i, ".org");
+		console.log(`[git-creation-time] 同时查找 .org 文件历史: ${orgFilePath}`);
+		timePromises.push(
+			tryGetGitCreationTimeWithFollow(orgFilePath).then((t) => {
+				if (t)
+					console.log(
+						`[git-creation-time] .org 文件结果: ${formatLocalLogDate(t)}`,
+					);
+				return t;
+			}),
+		);
+	}
 
-  // 策略3: 尝试通过 git log --follow 查找原始文件名，再尝试 .org 版本
-  timePromises.push(
-    tryGetOriginalFileName(filePath).then(async (originalName) => {
-      if (originalName && originalName !== filePath) {
-        console.log(`[git-creation-time] 发现原始文件名: ${originalName}`);
-        let orgOriginalPath = originalName;
-        if (/\.md$/i.test(originalName)) {
-           orgOriginalPath = originalName.replace(/\.md$/i, ".org");
-        }
-        
-        console.log(`[git-creation-time] 尝试原始文件的 .org 版本: ${orgOriginalPath}`);
-        const orgOriginalTime = await tryGetGitCreationTimeWithFollow(orgOriginalPath);
-        if (orgOriginalTime) {
-          console.log(`[git-creation-time] 通过原始 .org 文件获取到创建时间: ${new Date(orgOriginalTime).toISOString()}`);
-          return orgOriginalTime;
-        }
-      }
-      return null;
-    })
-  );
+	// 策略3: 尝试通过 git log --follow 查找原始文件名，再尝试 .org 版本
+	timePromises.push(
+		tryGetOriginalFileName(filePath).then(async (originalName) => {
+			if (originalName && originalName !== filePath) {
+				console.log(`[git-creation-time] 发现原始文件名: ${originalName}`);
+				let orgOriginalPath = originalName;
+				if (/\.md$/i.test(originalName)) {
+					orgOriginalPath = originalName.replace(/\.md$/i, ".org");
+				}
 
-  // 并行执行所有策略
-  const times = await Promise.all(timePromises);
-  const validTimes = times.filter((t): t is number => t !== null);
+				console.log(
+					`[git-creation-time] 尝试原始文件的 .org 版本: ${orgOriginalPath}`,
+				);
+				const orgOriginalTime =
+					await tryGetGitCreationTimeWithFollow(orgOriginalPath);
+				if (orgOriginalTime) {
+					console.log(
+						`[git-creation-time] 通过原始 .org 文件获取到创建时间: ${formatLocalLogDate(orgOriginalTime)}`,
+					);
+					return orgOriginalTime;
+				}
+			}
+			return null;
+		}),
+	);
 
-  if (validTimes.length > 0) {
-    const earliest = Math.min(...validTimes);
-    console.log(`[git-creation-time] 最终选择最早时间: ${new Date(earliest).toISOString()} (从 ${validTimes.length} 个结果中)`);
-    return earliest;
-  }
+	// 并行执行所有策略
+	const times = await Promise.all(timePromises);
+	const validTimes = times.filter((t): t is number => t !== null);
 
-  throw new Error("cannot get git creation time");
+	if (validTimes.length > 0) {
+		const earliest = Math.min(...validTimes);
+		console.log(
+			`[git-creation-time] 最终选择最早时间: ${formatLocalLogDate(earliest)} (从 ${validTimes.length} 个结果中)`,
+		);
+		return earliest;
+	}
+
+	throw new Error("cannot get git creation time");
 }
 
 // 追踪文件完整历史，取最早的提交时间
 // 注意: logseq.Git.execCommand 已经在 graph 目录下运行，不需要 -C
 async function tryGetGitCreationTimeWithFollow(
-  filePath: string
+	filePath: string,
 ): Promise<number | null> {
-  try {
-    const gitCommand = [
-      "log",
-      "--format=%at",
-      "--follow",
-      "--",
-      filePath,
-    ];
+	try {
+		const gitCommand = [
+			"log",
+			`--date=format-local:${GIT_LOCAL_DATE_FORMAT}`,
+			"--format=%ad",
+			"--follow",
+			"--",
+			filePath,
+		];
 
-    console.log(`[git] 执行命令: git ${gitCommand.join(' ')}`);
-    const result = await (logseq.Git?.execCommand?.(gitCommand) ??
-      Promise.reject(new Error("Git helper unavailable")));
-    console.log(`[git] 结果: stdout=${result.stdout ? result.stdout.substring(0, 100) : '(empty)'}`);
-    if (!result.stdout) return null;
+		console.log(`[git] 执行命令: git ${gitCommand.join(" ")}`);
+		const result = await (logseq.Git?.execCommand?.(gitCommand) ??
+			Promise.reject(new Error("Git helper unavailable")));
+		console.log(
+			`[git] 结果: stdout=${result.stdout ? result.stdout.substring(0, 100) : "(empty)"}`,
+		);
+		if (!result.stdout) return null;
 
-    // git log 默认最新在最前，所以按行分割后，最后一行是最早的提交时间
-    const lines = result.stdout.trim().split("\n").filter(Boolean);
-    if (lines.length === 0) return null;
-    
-    const lastLine = lines[lines.length - 1];
-    if (!/^\d+$/.test(lastLine)) return null;
+		// git log 默认最新在最前，所以按行分割后，最后一行是最早的提交时间
+		const lines = result.stdout.trim().split("\n").filter(Boolean);
+		if (lines.length === 0) return null;
 
-    return Number(lastLine) * 1000;
-  } catch (e) {
-    console.error(`[git] 命令执行失败 (${filePath}):`, e);
-    return null;
-  }
+		return parseGitLocalDate(lines[lines.length - 1]);
+	} catch (e) {
+		console.error(`[git] 命令执行失败 (${filePath}):`, e);
+		return null;
+	}
+}
+
+function parseGitLocalDate(dateText: string): number | null {
+	const timestamp = new Date(dateText.trim()).getTime();
+	return Number.isNaN(timestamp) ? null : timestamp;
+}
+
+function formatLocalLogDate(timestamp: number): string {
+	return new Date(timestamp).toString();
 }
 
 // 尝试获取文件重命名前的原始文件名
 async function tryGetOriginalFileName(
-  filePath: string
+	filePath: string,
 ): Promise<string | null> {
-  try {
-    const gitCommand = [
-      "log",
-      "--follow",
-      "--name-only",
-      "--format=",
-      "-z",
-      "--",
-      filePath,
-    ];
+	try {
+		const gitCommand = [
+			"log",
+			"--follow",
+			"--name-only",
+			"--format=",
+			"-z",
+			"--",
+			filePath,
+		];
 
-    const result = await (logseq.Git?.execCommand?.(gitCommand) ??
-      Promise.reject(new Error("Git helper unavailable")));
-    if (!result.stdout) return null;
+		const result = await (logseq.Git?.execCommand?.(gitCommand) ??
+			Promise.reject(new Error("Git helper unavailable")));
+		if (!result.stdout) return null;
 
-    // 分割 \0，取最后一个非空的项（最新在前，最旧在后）
-    const lines = result.stdout.split("\0").filter((l: string) => l.trim());
-    return lines.length > 0 ? lines[lines.length - 1].trim() : null;
-  } catch {
-    return null;
-  }
+		// 分割 \0，取最后一个非空的项（最新在前，最旧在后）
+		const lines = result.stdout.split("\0").filter((l: string) => l.trim());
+		return lines.length > 0 ? lines[lines.length - 1].trim() : null;
+	} catch {
+		return null;
+	}
 }
 
 // 正在进行中的 git 查询 map，用于去重并发请求
@@ -172,26 +198,26 @@ const DEBOUNCE_MS = 500;
  * 初始化插件设置
  */
 function initializeSettings() {
-if (logseq.settings === undefined) {
-     logseq.updateSettings({
-       createTimePropertyName: "created",
-       updateTimePropertyName: "updated",
-      useGitCreationTime: true,
-      ignorePages: "",
-      forceUpdateCreatedTime: false,
-      checkOnPageLoad: false,
-     });
-   }
+	if (logseq.settings === undefined) {
+		logseq.updateSettings({
+			createTimePropertyName: "created",
+			updateTimePropertyName: "updated",
+			useGitCreationTime: true,
+			ignorePages: "",
+			forceUpdateCreatedTime: false,
+			checkOnPageLoad: false,
+		});
+	}
 }
 
 /**
  * 根据用户语言加载相应的设置模式
  */
 async function loadSettingsSchema() {
-  const { preferredLanguage } = await logseq.App.getUserConfigs();
-  const schema =
-    preferredLanguage === "zh-CN" ? settingSchema : englishSettingSchema;
-  logseq.useSettingsSchema(schema);
+	const { preferredLanguage } = await logseq.App.getUserConfigs();
+	const schema =
+		preferredLanguage === "zh-CN" ? settingSchema : englishSettingSchema;
+	logseq.useSettingsSchema(schema);
 }
 
 /**
@@ -201,37 +227,39 @@ async function loadSettingsSchema() {
  * @returns 成功返回时间戳，失败/无配置返回 null
  */
 async function getPageCreationTime(
-  fileId: number | undefined,
-  useGitCreationTime: boolean
+	fileId: number | undefined,
+	useGitCreationTime: boolean,
 ): Promise<number | null> {
-  if (!fileId) {
-    return null;
-  } else if (useGitCreationTime) {
-    // 先检查缓存（已有结果）
-    const cached = gitCreationTimeCache.get(fileId);
-    if (cached !== undefined) return cached;
+	if (!fileId) {
+		return null;
+	} else if (useGitCreationTime) {
+		// 先检查缓存（已有结果）
+		const cached = gitCreationTimeCache.get(fileId);
+		if (cached !== undefined) return cached;
 
-    // 如果已经有正在进行的 git 查询，直接等待同一个 Promise（避免 race condition）
-    const inflight = inflightFetches.get(fileId);
-    if (inflight) {
-      console.log(`[git-creation-time] fileId=${fileId} 查询进行中，等待已有的 Promise`);
-      return inflight.catch(() => null);
-    }
+		// 如果已经有正在进行的 git 查询，直接等待同一个 Promise（避免 race condition）
+		const inflight = inflightFetches.get(fileId);
+		if (inflight) {
+			console.log(
+				`[git-creation-time] fileId=${fileId} 查询进行中，等待已有的 Promise`,
+			);
+			return inflight.catch(() => null);
+		}
 
-    // 发起新的查询，并登记到 inflight map
-    const fetchPromise = getGitFileCreationTime(fileId)
-      .then((result) => {
-        gitCreationTimeCache.set(fileId, result);
-        return result;
-      })
-      .finally(() => {
-        inflightFetches.delete(fileId);
-      });
+		// 发起新的查询，并登记到 inflight map
+		const fetchPromise = getGitFileCreationTime(fileId)
+			.then((result) => {
+				gitCreationTimeCache.set(fileId, result);
+				return result;
+			})
+			.finally(() => {
+				inflightFetches.delete(fileId);
+			});
 
-    inflightFetches.set(fileId, fetchPromise);
-    return fetchPromise.catch(() => null);
-  }
-  return null;
+		inflightFetches.set(fileId, fetchPromise);
+		return fetchPromise.catch(() => null);
+	}
+	return null;
 }
 
 /**
@@ -240,457 +268,522 @@ async function getPageCreationTime(
  * @param ignorePages 忽略页面列表字符串
  */
 function shouldIgnorePage(page: PageEntity, ignorePages?: string): boolean {
-  // 如果是日记页面，则忽略
-  if (page?.["journal?"]) return true;
+	// 如果是日记页面，则忽略
+	if (page?.["journal?"]) return true;
 
-  // 检查是否在忽略列表中
-  const ignorePagesList =
-    ignorePages
-      ?.split(",")
-      .map((p) => p.trim().toLowerCase())
-      .filter((p) => p.length > 0) || [];
+	// 检查是否在忽略列表中
+	const ignorePagesList =
+		ignorePages
+			?.split(",")
+			.map((p) => p.trim().toLowerCase())
+			.filter((p) => p.length > 0) || [];
 
-  if (ignorePagesList.includes(page.name.toLowerCase())) {
-    console.log(`page: ${page.name} defined in ignorePages is ignored`);
-    return true;
-  }
+	if (ignorePagesList.includes(page.name.toLowerCase())) {
+		console.log(`page: ${page.name} defined in ignorePages is ignored`);
+		return true;
+	}
 
-  return false;
+	return false;
 }
 
 /**
  * 带串行锁的页面更新入口
  * 保证同一 pageId 的 checkAndUpdatePage 不会并发执行
  */
-async function serializedCheckAndUpdatePage(currentPage: PageEntity, skipUpdatedProperty: boolean = false) {
-  const pageId = currentPage.id as number;
-  if (!pageId) return;
+async function serializedCheckAndUpdatePage(
+	currentPage: PageEntity,
+	skipUpdatedProperty = false,
+) {
+	const pageId = currentPage.id as number;
+	if (!pageId) return;
 
-  // 等待前一个同页面操作完成
-  const prevLock = pageLocks.get(pageId);
-  
-  let resolve: () => void;
-  const myLock = new Promise<void>((r) => { resolve = r; });
-  pageLocks.set(pageId, myLock);
+	// 等待前一个同页面操作完成
+	const prevLock = pageLocks.get(pageId);
 
-  try {
-    if (prevLock) {
-      console.log(`[lock] pageId=${pageId} 等待前一个操作完成...`);
-      await prevLock;
-    }
-    await checkAndUpdatePage(currentPage, skipUpdatedProperty);
-  } finally {
-    resolve!();
-    // 只在自己的锁还在时清理（避免清理掉后续排队的锁）
-    if (pageLocks.get(pageId) === myLock) {
-      pageLocks.delete(pageId);
-    }
-  }
+	let resolve: () => void;
+	const myLock = new Promise<void>((r) => {
+		resolve = r;
+	});
+	pageLocks.set(pageId, myLock);
+
+	try {
+		if (prevLock) {
+			console.log(`[lock] pageId=${pageId} 等待前一个操作完成...`);
+			await prevLock;
+		}
+		await checkAndUpdatePage(currentPage, skipUpdatedProperty);
+	} finally {
+		resolve!();
+		// 只在自己的锁还在时清理（避免清理掉后续排队的锁）
+		if (pageLocks.get(pageId) === myLock) {
+			pageLocks.delete(pageId);
+		}
+	}
 }
 
 /**
  * 处理数据块变化（带 debounce）
  */
 function handleBlockChange(data: {
-  blocks: BlockEntity[];
-  txData: IDatom[];
-  txMeta?: {
-    outlinerOp: string;
-    [key: string]: any;
-  };
+	blocks: BlockEntity[];
+	txData: IDatom[];
+	txMeta?: {
+		outlinerOp: string;
+		[key: string]: any;
+	};
 }) {
-  // 过滤不相关的操作（同步检查，无需 debounce）
-  if (data.txMeta?.outlinerOp !== "save-block") return;
-  if (data.txMeta?.undo || data.txMeta?.redo) return;
-  if (!data.blocks?.length) return;
+	// 过滤不相关的操作（同步检查，无需 debounce）
+	const op = data.txMeta?.outlinerOp;
+	if (op !== "save-block" && op !== "insert-blocks") return;
+	if (data.txMeta?.undo || data.txMeta?.redo) return;
+	if (!data.blocks?.length) return;
 
-  const blockUuid = data.blocks[0].uuid;
+	const blockUuid = data.blocks[0].uuid;
 
-  // 异步获取 pageId，然后 debounce
-  logseq.Editor.getBlock(blockUuid).then(async (block) => {
-    const pageId = block?.page.id as number;
-    if (!pageId) return;
+	// 异步获取 pageId，然后 debounce
+	logseq.Editor.getBlock(blockUuid)
+		.then(async (block) => {
+			const pageId = block?.page.id as number;
+			if (!pageId) return;
 
-    // 清除该页面之前的 debounce timer
-    const existingTimer = pageDebounceTimers.get(pageId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-    }
+			// 清除该页面之前的 debounce timer
+			const existingTimer = pageDebounceTimers.get(pageId);
+			if (existingTimer) {
+				clearTimeout(existingTimer);
+			}
 
-    // 设置新的 debounce timer
-    pageDebounceTimers.set(pageId, setTimeout(async () => {
-      pageDebounceTimers.delete(pageId);
-      try {
-        // debounce 结束后重新获取最新的 page 数据
-        const currentPage = await logseq.Editor.getPage(pageId, {
-          includeChildren: false,
-        });
+			// 设置新的 debounce timer
+			pageDebounceTimers.set(
+				pageId,
+				setTimeout(async () => {
+					pageDebounceTimers.delete(pageId);
+					try {
+						// debounce 结束后重新获取最新的 page 数据
+						const currentPage = await logseq.Editor.getPage(pageId, {
+							includeChildren: false,
+						});
 
-        if (!currentPage || !currentPage.updatedAt) return;
+						if (!currentPage || !currentPage.updatedAt) return;
 
-        console.log(`[debounce] pageId=${pageId} debounce 结束，开始处理`);
-        await serializedCheckAndUpdatePage(currentPage);
-      } catch (error) {
-        console.error("Error in debounced handleBlockChange:", error);
-      }
-    }, DEBOUNCE_MS));
-  }).catch((error) => {
-    console.error("Error getting block in handleBlockChange:", error);
-  });
+						console.log(`[debounce] pageId=${pageId} debounce 结束，开始处理`);
+						await serializedCheckAndUpdatePage(currentPage);
+					} catch (error) {
+						console.error("Error in debounced handleBlockChange:", error);
+					}
+				}, DEBOUNCE_MS),
+			);
+		})
+		.catch((error) => {
+			console.error("Error getting block in handleBlockChange:", error);
+		});
 }
 
 /**
  * 检查并更新页面日期属性
  */
-async function checkAndUpdatePage(currentPage: PageEntity, skipUpdatedProperty: boolean = false) {
-  try {
-    const {
-      createTimePropertyName,
-      updateTimePropertyName,
-      useGitCreationTime,
-      ignorePages,
-      forceUpdateCreatedTime,
-    } = logseq.settings as unknown as Settings;
+async function checkAndUpdatePage(
+	currentPage: PageEntity,
+	skipUpdatedProperty = false,
+) {
+	try {
+		const {
+			createTimePropertyName,
+			updateTimePropertyName,
+			useGitCreationTime,
+			ignorePages,
+			forceUpdateCreatedTime,
+		} = logseq.settings as unknown as Settings;
 
-    // 检查页面是否应该被忽略
-    if (shouldIgnorePage(currentPage, ignorePages)) return;
-    
-    const updatedAt = currentPage.updatedAt as number;
-    const fileId = currentPage.file?.id;
+		// 检查页面是否应该被忽略
+		if (shouldIgnorePage(currentPage, ignorePages)) return;
 
-    // 获取配置和时间
-    const [userConfigs, resolvedCreatedAtMs] = await Promise.all([
-      logseq.App.getUserConfigs(),
-      getPageCreationTime(fileId, useGitCreationTime),
-    ]);
+		const updatedAt = currentPage.updatedAt as number;
+		const fileId = currentPage.file?.id;
 
-    // 如果无法获取 Git 时间，使用当前时间作为 fallback（但标记这是一个 fallback）
-    const isFallbackCreationTime = resolvedCreatedAtMs === null;
-    const finalCreatedAtMs = resolvedCreatedAtMs ?? new Date().getTime();
+		// 获取配置和时间
+		const [userConfigs, resolvedCreatedAtMs] = await Promise.all([
+			logseq.App.getUserConfigs(),
+			getPageCreationTime(fileId, useGitCreationTime),
+		]);
 
-    // 将时间戳转换为用户首选的日期格式
-    const { preferredDateFormat } = userConfigs;
-    const formattedUpdatedAt = format(new Date(updatedAt), preferredDateFormat);
-    const formattedCreatedAt = format(
-      new Date(finalCreatedAtMs),
-      preferredDateFormat
-    );
+		// 如果无法获取 Git 时间，使用当前时间作为 fallback（但标记这是一个 fallback）
+		const isFallbackCreationTime = resolvedCreatedAtMs === null;
+		const finalCreatedAtMs = resolvedCreatedAtMs ?? new Date().getTime();
 
-    await handleDate(
-      currentPage.uuid,
-      formattedUpdatedAt,
-      formattedCreatedAt,
-      updateTimePropertyName,
-      createTimePropertyName,
-      forceUpdateCreatedTime,
-      isFallbackCreationTime,
-      preferredDateFormat,
-      skipUpdatedProperty
-    );
-  } catch (error) {
-    console.error("Error in checkAndUpdatePage:", error);
-  }
+		// 将时间戳转换为用户首选的日期格式
+		const { preferredDateFormat } = userConfigs;
+		const formattedUpdatedAt = format(new Date(updatedAt), preferredDateFormat);
+		const formattedCreatedAt = format(
+			new Date(finalCreatedAtMs),
+			preferredDateFormat,
+		);
+
+		await handleDate(
+			currentPage.uuid,
+			formattedUpdatedAt,
+			formattedCreatedAt,
+			updateTimePropertyName,
+			createTimePropertyName,
+			forceUpdateCreatedTime,
+			isFallbackCreationTime,
+			preferredDateFormat,
+			skipUpdatedProperty,
+		);
+	} catch (error) {
+		console.error("Error in checkAndUpdatePage:", error);
+	}
 }
 
 /**
  * 注册路由切换监听器
  */
 function registerRouteChangeListener() {
-  logseq.App.onRouteChanged(async ({ path, template }) => {
-    try {
-      const { checkOnPageLoad } = logseq.settings as unknown as Settings;
-      if (!checkOnPageLoad) return;
+	logseq.App.onRouteChanged(async ({ path, template }) => {
+		try {
+			const { checkOnPageLoad } = logseq.settings as unknown as Settings;
+			if (!checkOnPageLoad) return;
 
-      // 只有在浏览页面时才触发（排除图谱、设置页面等）
-      if (template === "/page/:name") {
-        const pageName = decodeURIComponent(path.replace(/^\/page\//, ''));
-        if (!pageName) return;
+			// 只有在浏览页面时才触发（排除图谱、设置页面等）
+			if (template === "/page/:name") {
+				const pageName = decodeURIComponent(path.replace(/^\/page\//, ""));
+				if (!pageName) return;
 
-        const currentPage = await logseq.Editor.getPage(pageName, {
-          includeChildren: false,
-        });
+				const currentPage = await logseq.Editor.getPage(pageName, {
+					includeChildren: false,
+				});
 
-        if (currentPage && currentPage.updatedAt) {
-          console.log(`[route-change] 进入页面 ${pageName}，触发日期检查...`);
-          await serializedCheckAndUpdatePage(currentPage, true);
-        }
-      }
-    } catch (error) {
-      console.error("Error handling route change:", error);
-    }
-  });
+				if (currentPage && currentPage.updatedAt) {
+					console.log(`[route-change] 进入页面 ${pageName}，触发日期检查...`);
+					await serializedCheckAndUpdatePage(currentPage, true);
+				}
+			}
+		} catch (error) {
+			console.error("Error handling route change:", error);
+		}
+	});
 }
 
 /**
  * 注册数据块变化监听器
  */
 function registerBlockChangeListener() {
-  logseq.DB.onChanged((data) => {
-    handleBlockChange(data);
-  });
+	logseq.DB.onChanged((data) => {
+		handleBlockChange(data);
+	});
 }
 
 /**
  * 处理日期更新
  */
 async function handleDate(
-  pageIdentity: PageIdentity,
-  updatedAt: string,
-  createdAt: string,
-  updateTimePropertyName: string,
-  createTimePropertyName: string,
-  forceUpdateCreatedTime: boolean,
-  isFallbackCreationTime: boolean,
-  preferredDateFormat: string,
-  skipUpdatedProperty: boolean = false
+	pageIdentity: PageIdentity,
+	updatedAt: string,
+	createdAt: string,
+	updateTimePropertyName: string,
+	createTimePropertyName: string,
+	forceUpdateCreatedTime: boolean,
+	isFallbackCreationTime: boolean,
+	preferredDateFormat: string,
+	skipUpdatedProperty = false,
 ) {
-  console.log("handleDate 开始执行", { pageIdentity, updatedAt, createdAt, updateTimePropertyName, createTimePropertyName, forceUpdateCreatedTime, isFallbackCreationTime });
-  const currentBlocksTree = await logseq.Editor.getPageBlocksTree(pageIdentity);
+	console.log("handleDate 开始执行", {
+		pageIdentity,
+		updatedAt,
+		createdAt,
+		updateTimePropertyName,
+		createTimePropertyName,
+		forceUpdateCreatedTime,
+		isFallbackCreationTime,
+	});
+	const currentBlocksTree = await logseq.Editor.getPageBlocksTree(pageIdentity);
 
-  if (!currentBlocksTree || currentBlocksTree.length === 0) {
-    console.log("handleDate 提前退出: 页面块树为空");
-    return;
-  }
+	if (!currentBlocksTree || currentBlocksTree.length === 0) {
+		console.log("handleDate 提前退出: 页面块树为空");
+		return;
+	}
 
-  const firstBlock = await logseq.Editor.getBlock(currentBlocksTree[0].uuid);
-  console.log("获取到第一个块:", { blockUuid: currentBlocksTree[0].uuid, content: firstBlock?.content });
+	const firstBlock = await logseq.Editor.getBlock(currentBlocksTree[0].uuid);
+	console.log("获取到第一个块:", {
+		blockUuid: currentBlocksTree[0].uuid,
+		content: firstBlock?.content,
+	});
 
-  if (!firstBlock) {
-    console.log("handleDate 提前退出: 无法获取第一个块");
-    return;
-  }
+	if (!firstBlock) {
+		console.log("handleDate 提前退出: 无法获取第一个块");
+		return;
+	}
 
-  // 如果已经有 created 属性，并且 updated 属性也是当天的话就直接退出（或者只退出 updated 并考虑 forceUpdate）
-  if (
-    firstBlock.content?.includes(`${createTimePropertyName}:: `) &&
-    (skipUpdatedProperty || firstBlock.content?.includes(`${updateTimePropertyName}:: `))
-  ) {
-    const created = firstBlock.content?.match(
-      new RegExp(
-        `${createTimePropertyName}:: \\[\\[([^\\]]+)\\]\\](?:\\r?\\n|$)`
-      )
-    );
-    const updatedCorrect = firstBlock.content?.match(
-      new RegExp(
-        `${updateTimePropertyName}:: \\[\\[${updatedAt}\\]\\](?:\\r?\\n|$)`
-      )
-    );
-    
-    let createdIsCorrect = true;
-    if (forceUpdateCreatedTime && !isFallbackCreationTime && created) {
-      // 防御规则：created 只能往回走，绝不能往前走
-      // 解析已有的 created 日期和新的 created 日期进行比较
-      const existingDate = parse(created[1], preferredDateFormat, new Date());
-      const newDate = parse(createdAt, preferredDateFormat, new Date());
-      if (isValid(existingDate) && isValid(newDate) && newDate >= existingDate) {
-        // 新日期不比旧日期更早，保留原样
-        console.log(`[guard] 新 created 日期 (${createdAt}) 不比已有日期 (${created[1]}) 更早，跳过更新`);
-        createdIsCorrect = true;
-      } else {
-        createdIsCorrect = created[1] === createdAt;
-      }
-    }
+	// 如果已经有 created 属性，并且 updated 属性也是当天的话就直接退出（或者只退出 updated 并考虑 forceUpdate）
+	if (
+		firstBlock.content?.includes(`${createTimePropertyName}:: `) &&
+		(skipUpdatedProperty ||
+			firstBlock.content?.includes(`${updateTimePropertyName}:: `))
+	) {
+		const created = firstBlock.content?.match(
+			new RegExp(
+				`${createTimePropertyName}:: \\[\\[([^\\]]+)\\]\\](?:\\r?\\n|$)`,
+			),
+		);
+		const updatedCorrect = firstBlock.content?.match(
+			new RegExp(
+				`${updateTimePropertyName}:: \\[\\[${updatedAt}\\]\\](?:\\r?\\n|$)`,
+			),
+		);
 
-    console.log("正则匹配结果:", { 
-      hasCreated: !!created,
-      updatedCorrect: !!updatedCorrect,
-      expectedUpdatedAt: updatedAt,
-      createdIsCorrect,
-    });
+		let createdIsCorrect = true;
+		if (forceUpdateCreatedTime && !isFallbackCreationTime && created) {
+			// 防御规则：created 只能往回走，绝不能往前走
+			// 解析已有的 created 日期和新的 created 日期进行比较
+			const existingDate = parse(created[1], preferredDateFormat, new Date());
+			const newDate = parse(createdAt, preferredDateFormat, new Date());
+			if (
+				isValid(existingDate) &&
+				isValid(newDate) &&
+				newDate >= existingDate
+			) {
+				// 新日期不比旧日期更早，保留原样
+				console.log(
+					`[guard] 新 created 日期 (${createdAt}) 不比已有日期 (${created[1]}) 更早，跳过更新`,
+				);
+				createdIsCorrect = true;
+			} else {
+				createdIsCorrect = created[1] === createdAt;
+			}
+		}
 
-    if (created && (skipUpdatedProperty || updatedCorrect) && createdIsCorrect) {
-      console.log("handleDate 提前退出: 满足退出条件（已存在 created、updated 正确，且创建时间正确或未开启强制更新）");
-      return;
-    }
-  }
+		console.log("正则匹配结果:", {
+			hasCreated: !!created,
+			updatedCorrect: !!updatedCorrect,
+			expectedUpdatedAt: updatedAt,
+			createdIsCorrect,
+		});
 
-  // 处理已有 updated 属性或者 created 属性的情况
-  if (
-    firstBlock.content?.includes(`${updateTimePropertyName}:: `) ||
-    firstBlock.content?.includes(`${createTimePropertyName}:: `)
-  ) {
-    console.log("调用 updateExistingProperties 更新已有属性");
-    await updateExistingProperties(
-      firstBlock,
-      currentBlocksTree[0].uuid,
-      updatedAt,
-      createdAt,
-      updateTimePropertyName,
-      createTimePropertyName,
-      forceUpdateCreatedTime,
-      isFallbackCreationTime,
-      preferredDateFormat,
-      skipUpdatedProperty
-    );
-  } else {
-    console.log("调用 addNewProperties 添加新属性");
-    await addNewProperties(
-      firstBlock,
-      currentBlocksTree[0].uuid,
-      updatedAt,
-      createdAt,
-      updateTimePropertyName,
-      createTimePropertyName,
-      skipUpdatedProperty
-    );
-  }
-  console.log("handleDate 执行完成");
+		if (
+			created &&
+			(skipUpdatedProperty || updatedCorrect) &&
+			createdIsCorrect
+		) {
+			console.log(
+				"handleDate 提前退出: 满足退出条件（已存在 created、updated 正确，且创建时间正确或未开启强制更新）",
+			);
+			return;
+		}
+	}
+
+	// 处理已有 updated 属性或者 created 属性的情况
+	if (
+		firstBlock.content?.includes(`${updateTimePropertyName}:: `) ||
+		firstBlock.content?.includes(`${createTimePropertyName}:: `)
+	) {
+		console.log("调用 updateExistingProperties 更新已有属性");
+		await updateExistingProperties(
+			firstBlock,
+			currentBlocksTree[0].uuid,
+			updatedAt,
+			createdAt,
+			updateTimePropertyName,
+			createTimePropertyName,
+			forceUpdateCreatedTime,
+			isFallbackCreationTime,
+			preferredDateFormat,
+			skipUpdatedProperty,
+		);
+	} else {
+		console.log("调用 addNewProperties 添加新属性");
+		await addNewProperties(
+			firstBlock,
+			currentBlocksTree[0].uuid,
+			updatedAt,
+			createdAt,
+			updateTimePropertyName,
+			createTimePropertyName,
+			skipUpdatedProperty,
+		);
+	}
+	console.log("handleDate 执行完成");
 }
 
 /**
  * 更新已存在的属性
  */
 async function updateExistingProperties(
-  firstBlock: BlockEntity,
-  blockUuid: string,
-  updatedAt: string,
-  createdAt: string,
-  updateTimePropertyName: string,
-  createTimePropertyName: string,
-  forceUpdateCreatedTime: boolean,
-  isFallbackCreationTime: boolean,
-  preferredDateFormat: string,
-  skipUpdatedProperty: boolean = false
+	firstBlock: BlockEntity,
+	blockUuid: string,
+	updatedAt: string,
+	createdAt: string,
+	updateTimePropertyName: string,
+	createTimePropertyName: string,
+	forceUpdateCreatedTime: boolean,
+	isFallbackCreationTime: boolean,
+	preferredDateFormat: string,
+	skipUpdatedProperty = false,
 ) {
-  console.log("updateExistingProperties 开始执行", { blockUuid, updatedAt, createdAt });
-  const oldContent = firstBlock.content;
-  let newContent = oldContent.trim();
+	console.log("updateExistingProperties 开始执行", {
+		blockUuid,
+		updatedAt,
+		createdAt,
+	});
+	const oldContent = firstBlock.content;
+	let newContent = oldContent.trim();
 
-  // 更新 updated 属性（仅在非 skipUpdatedProperty 模式下）
-  if (!skipUpdatedProperty) {
-    if (oldContent.includes(`${updateTimePropertyName}:: `)) {
-      console.log("更新已有的 updated 属性");
-      const oldRegex = new RegExp(
-        `${updateTimePropertyName}:: \\[\\[[^\\]]+\\]\\](?:\\r?\\n|$)`
-      );
-      const oldMatch = oldContent.match(oldRegex);
-      console.log("旧的 updated 属性:", oldMatch ? oldMatch[0] : "未找到匹配");
-      
-      newContent = newContent.replace(
-        oldRegex,
-        `${updateTimePropertyName}:: [[${updatedAt}]]\n`
-      );
-    } else {
-      // 如果没有 updated 属性，添加它
-      console.log("添加新的 updated 属性");
-      newContent = `${newContent}\n${updateTimePropertyName}:: [[${updatedAt}]]\n`;
-    }
-  } else {
-    console.log("跳过 updated 属性更新（skipUpdatedProperty=true）");
-  }
+	// 更新 updated 属性（仅在非 skipUpdatedProperty 模式下）
+	if (!skipUpdatedProperty) {
+		if (oldContent.includes(`${updateTimePropertyName}:: `)) {
+			console.log("更新已有的 updated 属性");
+			const oldRegex = new RegExp(
+				`${updateTimePropertyName}:: \\[\\[[^\\]]+\\]\\](?:\\r?\\n|$)`,
+			);
+			const oldMatch = oldContent.match(oldRegex);
+			console.log("旧的 updated 属性:", oldMatch ? oldMatch[0] : "未找到匹配");
 
-  // 如果没有 created 属性，添加它;如果已存在，根据 forceUpdateCreatedTime 判断是否覆盖
-  if (!oldContent.includes(`${createTimePropertyName}:: `)) {
-    console.log("添加新的 created 属性");
-    newContent = `${newContent}\n${createTimePropertyName}:: [[${createdAt}]]\n`;
-  } else {
-    // 只有当开启了 forceUpdate，且拿到了真实的 Git 时间（非 fallback），
-    // 且新日期比现有日期更早时，才覆盖已有的 created 时间！
-    if (forceUpdateCreatedTime && !isFallbackCreationTime) {
-      const createdRegex = new RegExp(
-        `${createTimePropertyName}:: \\[\\[([^\\]]+)\\]\\](?:\\r?\\n|$)`
-      );
-      const oldCreatedMatch = oldContent.match(createdRegex);
-      
-      // 防御规则：created 只能往回走，绝不能往前走
-      let shouldUpdate = true;
-      if (oldCreatedMatch) {
-        const existingDate = parse(oldCreatedMatch[1], preferredDateFormat, new Date());
-        const newDate = parse(createdAt, preferredDateFormat, new Date());
-        if (isValid(existingDate) && isValid(newDate) && newDate >= existingDate) {
-          shouldUpdate = false;
-          console.log(`[guard] 不覆盖 created: 新日期 (${createdAt}) 不比已有日期 (${oldCreatedMatch[1]}) 更早`);
-        }
-      }
-      
-      if (shouldUpdate) {
-        console.log("强制更新已存在的 created 属性:", oldCreatedMatch ? oldCreatedMatch[0].trim() : "未找到匹配", "->", `${createTimePropertyName}:: [[${createdAt}]]`);
-        // 需要用不带捕获组的 regex 来 replace
-        const replaceRegex = new RegExp(
-          `${createTimePropertyName}:: \\[\\[[^\\]]+\\]\\](?:\\r?\\n|$)`
-        );
-        newContent = newContent.replace(
-          replaceRegex,
-          `${createTimePropertyName}:: [[${createdAt}]]\n`
-        );
-      }
-    } else {
-      console.log(`保留已有的 created 属性 (forceUpdate=${forceUpdateCreatedTime}, isFallback=${isFallbackCreationTime})`);
-    }
-  }
+			newContent = newContent.replace(
+				oldRegex,
+				`${updateTimePropertyName}:: [[${updatedAt}]]\n`,
+			);
+		} else {
+			// 如果没有 updated 属性，添加它
+			console.log("添加新的 updated 属性");
+			newContent = `${newContent}\n${updateTimePropertyName}:: [[${updatedAt}]]\n`;
+		}
+	} else {
+		console.log("跳过 updated 属性更新（skipUpdatedProperty=true）");
+	}
 
-  await logseq.Editor.updateBlock(blockUuid, newContent);
+	// 如果没有 created 属性，添加它;如果已存在，根据 forceUpdateCreatedTime 判断是否覆盖
+	if (!oldContent.includes(`${createTimePropertyName}:: `)) {
+		console.log("添加新的 created 属性");
+		newContent = `${newContent}\n${createTimePropertyName}:: [[${createdAt}]]\n`;
+	} else {
+		// 只有当开启了 forceUpdate，且拿到了真实的 Git 时间（非 fallback），
+		// 且新日期比现有日期更早时，才覆盖已有的 created 时间！
+		if (forceUpdateCreatedTime && !isFallbackCreationTime) {
+			const createdRegex = new RegExp(
+				`${createTimePropertyName}:: \\[\\[([^\\]]+)\\]\\](?:\\r?\\n|$)`,
+			);
+			const oldCreatedMatch = oldContent.match(createdRegex);
+
+			// 防御规则：created 只能往回走，绝不能往前走
+			let shouldUpdate = true;
+			if (oldCreatedMatch) {
+				const existingDate = parse(
+					oldCreatedMatch[1],
+					preferredDateFormat,
+					new Date(),
+				);
+				const newDate = parse(createdAt, preferredDateFormat, new Date());
+				if (
+					isValid(existingDate) &&
+					isValid(newDate) &&
+					newDate >= existingDate
+				) {
+					shouldUpdate = false;
+					console.log(
+						`[guard] 不覆盖 created: 新日期 (${createdAt}) 不比已有日期 (${oldCreatedMatch[1]}) 更早`,
+					);
+				}
+			}
+
+			if (shouldUpdate) {
+				console.log(
+					"强制更新已存在的 created 属性:",
+					oldCreatedMatch ? oldCreatedMatch[0].trim() : "未找到匹配",
+					"->",
+					`${createTimePropertyName}:: [[${createdAt}]]`,
+				);
+				// 需要用不带捕获组的 regex 来 replace
+				const replaceRegex = new RegExp(
+					`${createTimePropertyName}:: \\[\\[[^\\]]+\\]\\](?:\\r?\\n|$)`,
+				);
+				newContent = newContent.replace(
+					replaceRegex,
+					`${createTimePropertyName}:: [[${createdAt}]]\n`,
+				);
+			}
+		} else {
+			console.log(
+				`保留已有的 created 属性 (forceUpdate=${forceUpdateCreatedTime}, isFallback=${isFallbackCreationTime})`,
+			);
+		}
+	}
+
+	await logseq.Editor.updateBlock(blockUuid, newContent);
 }
 
 /**
  * 添加新的属性
  */
 async function addNewProperties(
-  firstBlock: BlockEntity,
-  blockUuid: string,
-  updatedAt: string,
-  createdAt: string,
-  updateTimePropertyName: string,
-  createTimePropertyName: string,
-  skipUpdatedProperty: boolean = false
+	firstBlock: BlockEntity,
+	blockUuid: string,
+	updatedAt: string,
+	createdAt: string,
+	updateTimePropertyName: string,
+	createTimePropertyName: string,
+	skipUpdatedProperty = false,
 ) {
-  console.log("addNewProperties 开始执行", { blockUuid, updatedAt, createdAt });
-  // 检查第一个块是否为属性块（每行都是 xxx:: xxx 的形式）
-  const oldContent = firstBlock?.content;
-  const isPropertyBlock = oldContent
-    ?.split("\n")
-    .every((line) => line.trim() === "" || /^[^:]+::/.test(line.trim()));
-  
-  console.log("属性块检查:", { isPropertyBlock, oldContent });
+	console.log("addNewProperties 开始执行", { blockUuid, updatedAt, createdAt });
+	// 检查第一个块是否为属性块（每行都是 xxx:: xxx 的形式）
+	const oldContent = firstBlock?.content;
+	const isPropertyBlock = oldContent
+		?.split("\n")
+		.every((line) => line.trim() === "" || /^[^:]+::/.test(line.trim()));
 
-  // 如果是属性块，直接在末尾添加新的属性
-  if (isPropertyBlock) {
-    console.log("向属性块添加新属性");
-    const updatedPart = skipUpdatedProperty ? '' : `\n${updateTimePropertyName}:: [[${updatedAt}]]`;
-    const newContent = `${oldContent.trimEnd()}\n${createTimePropertyName}:: [[${createdAt}]]${updatedPart}\n`;
-    console.log("准备更新块", { blockUuid, oldContent, newContent });
-    try {
-      await logseq.Editor.updateBlock(blockUuid, newContent);
-      console.log("块更新成功");
-    } catch (error) {
-      console.error("块更新失败:", error);
-    }
-  } else {
-    // 如果不是属性块，创建新的属性块
-    console.log("创建新的属性块");
-    const updatedPart = skipUpdatedProperty ? '' : `${updateTimePropertyName}:: [[${updatedAt}]]\n`;
-    const newContent = `${createTimePropertyName}:: [[${createdAt}]]\n${updatedPart}`;
-    console.log("准备插入块", { parentUuid: firstBlock.uuid, newContent, before: true });
-    try {
-      await logseq.Editor.insertBlock(
-        firstBlock.uuid,
-        newContent.trimEnd(),
-        { before: true }
-      );
-      console.log("块插入成功");
-    } catch (error) {
-      console.error("块插入失败:", error);
-    }
-  }
+	console.log("属性块检查:", { isPropertyBlock, oldContent });
+
+	// 如果是属性块，直接在末尾添加新的属性
+	if (isPropertyBlock) {
+		console.log("向属性块添加新属性");
+		const updatedPart = skipUpdatedProperty
+			? ""
+			: `\n${updateTimePropertyName}:: [[${updatedAt}]]`;
+		const newContent = `${oldContent.trimEnd()}\n${createTimePropertyName}:: [[${createdAt}]]${updatedPart}\n`;
+		console.log("准备更新块", { blockUuid, oldContent, newContent });
+		try {
+			await logseq.Editor.updateBlock(blockUuid, newContent);
+			console.log("块更新成功");
+		} catch (error) {
+			console.error("块更新失败:", error);
+		}
+	} else {
+		// 如果不是属性块，创建新的属性块
+		console.log("创建新的属性块");
+		const updatedPart = skipUpdatedProperty
+			? ""
+			: `${updateTimePropertyName}:: [[${updatedAt}]]\n`;
+		const newContent = `${createTimePropertyName}:: [[${createdAt}]]\n${updatedPart}`;
+		console.log("准备插入块", {
+			parentUuid: firstBlock.uuid,
+			newContent,
+			before: true,
+		});
+		try {
+			await logseq.Editor.insertBlock(firstBlock.uuid, newContent.trimEnd(), {
+				before: true,
+			});
+			console.log("块插入成功");
+		} catch (error) {
+			console.error("块插入失败:", error);
+		}
+	}
 }
 
 /**
  * 主函数
  */
 async function main() {
-  console.info(`#${pluginId}: MAIN`);
+	console.info(`#${pluginId}: MAIN`);
 
-  // 初始化插件设置
-  initializeSettings();
+	// 初始化插件设置
+	initializeSettings();
 
-  // 加载设置模式
-  await loadSettingsSchema();
+	// 加载设置模式
+	await loadSettingsSchema();
 
-  // 注册块变化监听器
-  registerBlockChangeListener();
+	// 注册块变化监听器
+	registerBlockChangeListener();
 
-  // 注册路由切换监听器
-  registerRouteChangeListener();
+	// 注册路由切换监听器
+	registerRouteChangeListener();
 }
 
 // 启动插件
