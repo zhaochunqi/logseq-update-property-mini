@@ -41,6 +41,6 @@ export const englishSettingSchema: Array<SettingSchemaDesc> = [
     type: "boolean",
     default: false,
     title: "Check on page load",
-    description: "When enabled, it will automatically check and update dates every time you navigate to a page (no block edit required).",
+    description: "When enabled, it checks and repairs existing properties on every page navigation (no block edit required). It never adds properties to pages that do not have them yet; adding only happens on a real content change.",
   },
 ];

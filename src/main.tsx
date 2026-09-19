@@ -289,8 +289,12 @@ function shouldIgnorePage(page: PageEntity, ignorePages?: string): boolean {
 /**
  * 带串行锁的页面更新入口
  * 保证同一 pageId 的 checkAndUpdatePage 不会并发执行
+ * @param repairOnly 只修复已有属性，不给还没有属性的页面新增（进入页面时用）
  */
-async function serializedCheckAndUpdatePage(currentPage: PageEntity) {
+async function serializedCheckAndUpdatePage(
+	currentPage: PageEntity,
+	repairOnly = false,
+) {
 	const pageId = currentPage.id as number;
 	if (!pageId) return;
 
@@ -308,7 +312,7 @@ async function serializedCheckAndUpdatePage(currentPage: PageEntity) {
 			console.log(`[lock] pageId=${pageId} 等待前一个操作完成...`);
 			await prevLock;
 		}
-		await checkAndUpdatePage(currentPage);
+		await checkAndUpdatePage(currentPage, repairOnly);
 	} finally {
 		resolve!();
 		// 只在自己的锁还在时清理（避免清理掉后续排队的锁）
@@ -386,8 +390,12 @@ function handleBlockChange(data: {
 /**
  * 检查并更新页面日期属性
  */
-async function checkAndUpdatePage(currentPage: PageEntity) {
+async function checkAndUpdatePage(
+	currentPage: PageEntity,
+	repairOnly = false,
+) {
 	try {
+		// SAFETY: initializeSettings 保证了这些 key 一定存在，字段名与 Settings 一一对应
 		const {
 			createTimePropertyName,
 			updateTimePropertyName,
@@ -429,6 +437,7 @@ async function checkAndUpdatePage(currentPage: PageEntity) {
 			forceUpdateCreatedTime,
 			isFallbackCreationTime,
 			preferredDateFormat,
+			repairOnly,
 		);
 	} catch (error) {
 		console.error("Error in checkAndUpdatePage:", error);
@@ -441,6 +450,7 @@ async function checkAndUpdatePage(currentPage: PageEntity) {
 function registerRouteChangeListener() {
 	logseq.App.onRouteChanged(async ({ path, template }) => {
 		try {
+			// SAFETY: 同 checkAndUpdatePage，initializeSettings 已保证该 key 存在
 			const { checkOnPageLoad } = logseq.settings as unknown as Settings;
 			if (!checkOnPageLoad) return;
 
@@ -454,8 +464,10 @@ function registerRouteChangeListener() {
 				});
 
 				if (currentPage && currentPage.updatedAt) {
-					console.log(`[route-change] 进入页面 ${pageName}，触发日期检查...`);
-					await serializedCheckAndUpdatePage(currentPage);
+					console.log(
+						`[route-change] 进入页面 ${pageName}，仅修复已有属性（不新增）`,
+					);
+					await serializedCheckAndUpdatePage(currentPage, true);
 				}
 			}
 		} catch (error) {
@@ -485,6 +497,7 @@ async function handleDate(
 	forceUpdateCreatedTime: boolean,
 	isFallbackCreationTime: boolean,
 	preferredDateFormat: string,
+	repairOnly = false,
 ) {
 	console.log("handleDate 开始执行", {
 		pageIdentity,
@@ -583,6 +596,14 @@ async function handleDate(
 			preferredDateFormat,
 		);
 	} else {
+		// 新增属性只能由真实内容变更（save-block）触发。
+		// 进入页面（repairOnly）时只做修复，避免"没改内容也被加上 created/updated"。
+		if (repairOnly) {
+			console.log(
+				"handleDate 提前退出: 页面还没有日期属性，等待真实内容变更后再添加",
+			);
+			return;
+		}
 		console.log("调用 addNewProperties 添加新属性");
 		await addNewProperties(
 			firstBlock,
