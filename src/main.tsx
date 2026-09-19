@@ -44,9 +44,7 @@ async function getGitFileCreationTime(fileId: number) {
 	timePromises.push(
 		tryGetGitCreationTimeWithFollow(filePath).then((t) => {
 			if (t)
-				console.log(
-					`[git-creation-time] --follow 结果: ${formatLocalLogDate(t)}`,
-				);
+				console.log(`[git-creation-time] --follow 结果: ${formatLocalLogDate(t)}`);
 			return t;
 		}),
 	);
@@ -58,9 +56,7 @@ async function getGitFileCreationTime(fileId: number) {
 		timePromises.push(
 			tryGetGitCreationTimeWithFollow(orgFilePath).then((t) => {
 				if (t)
-					console.log(
-						`[git-creation-time] .org 文件结果: ${formatLocalLogDate(t)}`,
-					);
+					console.log(`[git-creation-time] .org 文件结果: ${formatLocalLogDate(t)}`);
 				return t;
 			}),
 		);
@@ -390,10 +386,7 @@ function handleBlockChange(data: {
 /**
  * 检查并更新页面日期属性
  */
-async function checkAndUpdatePage(
-	currentPage: PageEntity,
-	repairOnly = false,
-) {
+async function checkAndUpdatePage(currentPage: PageEntity, repairOnly = false) {
 	try {
 		// SAFETY: initializeSettings 保证了这些 key 一定存在，字段名与 Settings 一一对应
 		const {
@@ -532,9 +525,7 @@ async function handleDate(
 		firstBlock.content?.includes(`${updateTimePropertyName}:: `)
 	) {
 		const created = firstBlock.content?.match(
-			new RegExp(
-				`${createTimePropertyName}:: \\[\\[([^\\]]+)\\]\\](?:\\r?\\n|$)`,
-			),
+			new RegExp(`${createTimePropertyName}:: \\[\\[([^\\]]+)\\]\\](?:\\r?\\n|$)`),
 		);
 		const updatedCorrect = firstBlock.content?.match(
 			new RegExp(
@@ -548,11 +539,7 @@ async function handleDate(
 			// 解析已有的 created 日期和新的 created 日期进行比较
 			const existingDate = parse(created[1], preferredDateFormat, new Date());
 			const newDate = parse(createdAt, preferredDateFormat, new Date());
-			if (
-				isValid(existingDate) &&
-				isValid(newDate) &&
-				newDate >= existingDate
-			) {
+			if (isValid(existingDate) && isValid(newDate) && newDate >= existingDate) {
 				// 新日期不比旧日期更早，保留原样
 				console.log(
 					`[guard] 新 created 日期 (${createdAt}) 不比已有日期 (${created[1]}) 更早，跳过更新`,
@@ -680,11 +667,7 @@ async function updateExistingProperties(
 					new Date(),
 				);
 				const newDate = parse(createdAt, preferredDateFormat, new Date());
-				if (
-					isValid(existingDate) &&
-					isValid(newDate) &&
-					newDate >= existingDate
-				) {
+				if (isValid(existingDate) && isValid(newDate) && newDate >= existingDate) {
 					shouldUpdate = false;
 					console.log(
 						`[guard] 不覆盖 created: 新日期 (${createdAt}) 不比已有日期 (${oldCreatedMatch[1]}) 更早`,

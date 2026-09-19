@@ -34,13 +34,15 @@ export const englishSettingSchema: Array<SettingSchemaDesc> = [
     type: "boolean",
     default: false,
     title: "Force update creation time",
-    description: "When enabled, if the existing created time does not match Git time, it will force update and overwrite it.",
+    description:
+      "When enabled, if the existing created time does not match Git time, it will force update and overwrite it.",
   },
   {
     key: "checkOnPageLoad",
     type: "boolean",
     default: false,
     title: "Check on page load",
-    description: "When enabled, it checks and repairs existing properties on every page navigation (no block edit required). It never adds properties to pages that do not have them yet; adding only happens on a real content change.",
+    description:
+      "When enabled, it checks and repairs existing properties on every page navigation (no block edit required). It never adds properties to pages that do not have them yet; adding only happens on a real content change.",
   },
 ];

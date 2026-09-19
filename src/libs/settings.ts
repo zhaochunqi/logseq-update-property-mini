@@ -34,13 +34,15 @@ export const settingSchema: Array<SettingSchemaDesc> = [
     type: "boolean",
     default: false,
     title: "强制更新创建时间",
-    description: "开启时，如果发现已存在的 created 时间与 Git 时间不一致，将强制更新覆盖它。",
+    description:
+      "开启时，如果发现已存在的 created 时间与 Git 时间不一致，将强制更新覆盖它。",
   },
   {
     key: "checkOnPageLoad",
     type: "boolean",
     default: false,
     title: "切换页面时自动检查",
-    description: "开启后，每次进入页面时会检查并修复已存在的属性（无需修改页面内容）。不会给还没有这些属性的页面新增，新增只在页面内容真实变更时发生。",
+    description:
+      "开启后，每次进入页面时会检查并修复已存在的属性（无需修改页面内容）。不会给还没有这些属性的页面新增，新增只在页面内容真实变更时发生。",
   },
 ];
