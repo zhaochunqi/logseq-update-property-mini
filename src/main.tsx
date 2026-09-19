@@ -362,6 +362,14 @@ function handleBlockChange(data: {
 
 						if (!currentPage || !currentPage.updatedAt) return;
 
+						// 守卫：仅当该 pageId 是当前活跃页面时才处理
+						// 避免预览/后台 DB 变化（非用户主动编辑）也去改动属性
+						const activePage = await logseq.Editor.getCurrentPage();
+						if (!activePage || activePage.id !== pageId) {
+							console.log(`[guard] pageId=${pageId} 不是当前活跃页面，跳过`);
+							return;
+						}
+
 						console.log(`[debounce] pageId=${pageId} debounce 结束，开始处理`);
 						await serializedCheckAndUpdatePage(currentPage);
 					} catch (error) {
