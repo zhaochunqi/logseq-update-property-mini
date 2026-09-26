@@ -43,6 +43,6 @@ export const englishSettingSchema: Array<SettingSchemaDesc> = [
     default: false,
     title: "Check on page load",
     description:
-      "When enabled, it checks and repairs existing properties on every page navigation (no block edit required). It never adds properties to pages that do not have them yet; adding only happens on a real content change.",
+      "When enabled, it checks and repairs the existing created property on every page navigation (no block edit required). It never adds properties and never rewrites updated — updated is only touched on a real content change.",
   },
 ];

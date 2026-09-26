@@ -282,6 +282,38 @@ function shouldIgnorePage(page: PageEntity, ignorePages?: string): boolean {
 	return false;
 }
 
+// 属性行形如 `key:: value`
+const PROPERTY_LINE = /^[^:]+::/;
+
+/**
+ * 判断单个块是否包含“真实内容”（排除空白行和纯属性行）
+ */
+function blockHasRealContent(content?: string | null): boolean {
+	if (!content) return false;
+	return content.split("\n").some((line) => {
+		const trimmed = line.trim();
+		return trimmed !== "" && !PROPERTY_LINE.test(trimmed);
+	});
+}
+
+type BlockChildren = NonNullable<BlockEntity["children"]>;
+
+/**
+ * 判断页面是否有真实内容（递归检查子块）
+ * 空页面（只有空白块或只有属性）不应该被自动加上 created/updated
+ */
+function pageHasRealContent(blocks?: BlockChildren | null): boolean {
+	if (!blocks?.length) return false;
+	return blocks.some((block) => {
+		// children 里可能是 ["uuid", id] 引用，看不到内容，跳过
+		if (Array.isArray(block)) return false;
+		return (
+			blockHasRealContent(block?.content) ||
+			pageHasRealContent(block?.children)
+		);
+	});
+}
+
 /**
  * 带串行锁的页面更新入口
  * 保证同一 pageId 的 checkAndUpdatePage 不会并发执行
@@ -519,10 +551,11 @@ async function handleDate(
 		return;
 	}
 
-	// 如果已经有 created 属性，并且 updated 属性也是当天的话就直接退出（或者只退出 updated 并考虑 forceUpdate）
+	// repairOnly（进入页面）表示没有内容变化，此时不检查也不改写 updated
 	if (
 		firstBlock.content?.includes(`${createTimePropertyName}:: `) &&
-		firstBlock.content?.includes(`${updateTimePropertyName}:: `)
+		(repairOnly ||
+			firstBlock.content?.includes(`${updateTimePropertyName}:: `))
 	) {
 		const created = firstBlock.content?.match(
 			new RegExp(`${createTimePropertyName}:: \\[\\[([^\\]]+)\\]\\](?:\\r?\\n|$)`),
@@ -557,7 +590,7 @@ async function handleDate(
 			createdIsCorrect,
 		});
 
-		if (created && updatedCorrect && createdIsCorrect) {
+		if (created && (repairOnly || updatedCorrect) && createdIsCorrect) {
 			console.log(
 				"handleDate 提前退出: 满足退出条件（已存在 created、updated 正确，且创建时间正确或未开启强制更新）",
 			);
@@ -581,6 +614,7 @@ async function handleDate(
 			forceUpdateCreatedTime,
 			isFallbackCreationTime,
 			preferredDateFormat,
+			repairOnly,
 		);
 	} else {
 		// 新增属性只能由真实内容变更（save-block）触发。
@@ -588,6 +622,13 @@ async function handleDate(
 		if (repairOnly) {
 			console.log(
 				"handleDate 提前退出: 页面还没有日期属性，等待真实内容变更后再添加",
+			);
+			return;
+		}
+		// 空页面（新建、或者只是点进来还没写内容）不应该被加上 created/updated
+		if (!pageHasRealContent(currentBlocksTree)) {
+			console.log(
+				"handleDate 提前退出: 页面没有真实内容，暂不添加日期属性",
 			);
 			return;
 		}
@@ -617,6 +658,7 @@ async function updateExistingProperties(
 	forceUpdateCreatedTime: boolean,
 	isFallbackCreationTime: boolean,
 	preferredDateFormat: string,
+	repairOnly = false,
 ) {
 	console.log("updateExistingProperties 开始执行", {
 		blockUuid,
@@ -627,7 +669,10 @@ async function updateExistingProperties(
 	let newContent = oldContent.trim();
 
 	// 更新 updated 属性
-	if (oldContent.includes(`${updateTimePropertyName}:: `)) {
+	// repairOnly（进入页面）时本次没有内容变化，绝不写 updated
+	if (repairOnly) {
+		console.log("跳过 updated 属性（repairOnly：本次没有内容变化）");
+	} else if (oldContent.includes(`${updateTimePropertyName}:: `)) {
 		console.log("更新已有的 updated 属性");
 		const oldRegex = new RegExp(
 			`${updateTimePropertyName}:: \\[\\[[^\\]]+\\]\\](?:\\r?\\n|$)`,
@@ -647,8 +692,12 @@ async function updateExistingProperties(
 
 	// 如果没有 created 属性，添加它;如果已存在，根据 forceUpdateCreatedTime 判断是否覆盖
 	if (!oldContent.includes(`${createTimePropertyName}:: `)) {
-		console.log("添加新的 created 属性");
-		newContent = `${newContent}\n${createTimePropertyName}:: [[${createdAt}]]\n`;
+		if (repairOnly) {
+			console.log("跳过新增 created 属性（repairOnly：本次没有内容变化）");
+		} else {
+			console.log("添加新的 created 属性");
+			newContent = `${newContent}\n${createTimePropertyName}:: [[${createdAt}]]\n`;
+		}
 	} else {
 		// 只有当开启了 forceUpdate，且拿到了真实的 Git 时间（非 fallback），
 		// 且新日期比现有日期更早时，才覆盖已有的 created 时间！
@@ -696,6 +745,12 @@ async function updateExistingProperties(
 				`保留已有的 created 属性 (forceUpdate=${forceUpdateCreatedTime}, isFallback=${isFallbackCreationTime})`,
 			);
 		}
+	}
+
+	// 内容没变化就不写入，避免无意义地触发页面 mtime 变化
+	if (newContent === oldContent) {
+		console.log("updateExistingProperties 内容无变化，跳过写入");
+		return;
 	}
 
 	await logseq.Editor.updateBlock(blockUuid, newContent);
