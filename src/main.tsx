@@ -282,35 +282,28 @@ function shouldIgnorePage(page: PageEntity, ignorePages?: string): boolean {
 	return false;
 }
 
-// 属性行形如 `key:: value`
-const PROPERTY_LINE = /^[^:]+::/;
-
 /**
- * 判断单个块是否包含“真实内容”（排除空白行和纯属性行）
+ * 判断单个块是否有内容（纯空白行不算）
+ * 注意：属性行（如 `tags:: xxx`）也算内容——用户添加标签、套用模板属性
+ * 都是主动编辑，应该触发 created/updated。
  */
-function blockHasRealContent(content?: string | null): boolean {
+function blockHasContent(content?: string | null): boolean {
 	if (!content) return false;
-	return content.split("\n").some((line) => {
-		const trimmed = line.trim();
-		return trimmed !== "" && !PROPERTY_LINE.test(trimmed);
-	});
+	return content.split("\n").some((line) => line.trim() !== "");
 }
 
 type BlockChildren = NonNullable<BlockEntity["children"]>;
 
 /**
- * 判断页面是否有真实内容（递归检查子块）
- * 空页面（只有空白块或只有属性）不应该被自动加上 created/updated
+ * 判断页面是否有内容（递归检查子块）
+ * 只有真正的空白页（没有块 / 块内容全是空白）才不应该被自动加上 created/updated
  */
-function pageHasRealContent(blocks?: BlockChildren | null): boolean {
+function pageHasContent(blocks?: BlockChildren | null): boolean {
 	if (!blocks?.length) return false;
 	return blocks.some((block) => {
 		// children 里可能是 ["uuid", id] 引用，看不到内容，跳过
 		if (Array.isArray(block)) return false;
-		return (
-			blockHasRealContent(block?.content) ||
-			pageHasRealContent(block?.children)
-		);
+		return blockHasContent(block?.content) || pageHasContent(block?.children);
 	});
 }
 
@@ -617,20 +610,27 @@ async function handleDate(
 			repairOnly,
 		);
 	} else {
-		// 新增属性只能由真实内容变更（save-block）触发。
-		// 进入页面（repairOnly）时只做修复，避免"没改内容也被加上 created/updated"。
-		if (repairOnly) {
+		// 纯空白页（新建后还没写任何东西）不应该被加上 created/updated；
+		// 但只有属性行（比如刚添加的 tags::）也算内容，要正常添加
+		if (!pageHasContent(currentBlocksTree)) {
 			console.log(
-				"handleDate 提前退出: 页面还没有日期属性，等待真实内容变更后再添加",
+				"handleDate 提前退出: 页面没有任何内容（空白页），暂不添加日期属性",
 			);
 			return;
 		}
-		// 空页面（新建、或者只是点进来还没写内容）不应该被加上 created/updated
-		if (!pageHasRealContent(currentBlocksTree)) {
+		// 进入页面（repairOnly）默认不新增，避免"没改内容也被加上 created/updated"。
+		// 例外：git 能给出真实创建时间（文件已在 git 历史里），说明这个页面早就存在，
+		// 补上的是真实历史时间而不是"现在"，可以安全回填。
+		if (repairOnly) {
+			if (isFallbackCreationTime) {
+				console.log(
+					"handleDate 提前退出: 页面还没有日期属性，且 git 没有可用创建时间，等待真实内容变更后再添加",
+				);
+				return;
+			}
 			console.log(
-				"handleDate 提前退出: 页面没有真实内容，暂不添加日期属性",
+				"handleDate: 进入页面，但 git 能提供真实创建时间，回填缺失的日期属性",
 			);
-			return;
 		}
 		console.log("调用 addNewProperties 添加新属性");
 		await addNewProperties(

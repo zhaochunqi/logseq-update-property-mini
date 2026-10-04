@@ -43,6 +43,6 @@ export const settingSchema: Array<SettingSchemaDesc> = [
     default: false,
     title: "切换页面时自动检查",
     description:
-      "开启后，每次进入页面时会检查并修复已存在的 created 属性（无需修改页面内容）。不会新增属性，也不会改写 updated——updated 只在页面内容真实变更时更新。",
+      "开启后，每次进入页面时会检查并修复已存在的 created 属性（无需修改页面内容）。不会改写已有 updated；但如果页面有内容且 git 能提供真实创建时间，会补上缺失的 created/updated。",
   },
 ];
